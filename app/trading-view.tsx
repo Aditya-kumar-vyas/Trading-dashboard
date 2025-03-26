@@ -207,20 +207,33 @@ function TimeframeCard({
         break;
       case "previousQuarter":
         // Previous quarter
-        const prevQuarterEndMonth = Math.floor(today.getMonth() / 3) * 3 - 1;
-        const prevQuarterStartMonth = prevQuarterEndMonth - 2;
-        const prevQuarterYear =
-          today.getFullYear() + (prevQuarterEndMonth < 0 ? -1 : 0);
+        const currentQuarter = Math.floor(today.getMonth() / 3);
 
-        fromDate = new Date(prevQuarterYear, prevQuarterStartMonth + 3, 1);
-        fromDate.setDate(fromDate.getDate() - 1); // Last day of the previous month
+        // Calculate previous quarter values
+        let prevQuarter, prevQuarterYear;
 
-        // Calculate start date
-        const daysInPrevQuarter = fromDate.getDate();
+        if (currentQuarter === 0) {
+          // If current quarter is Q1 (Jan-Mar), prev quarter is Q4 of last year
+          prevQuarter = 3; // Q4
+          prevQuarterYear = today.getFullYear() - 1;
+        } else {
+          // Otherwise, prev quarter is in the same year
+          prevQuarter = currentQuarter - 1;
+          prevQuarterYear = today.getFullYear();
+        }
+
+        // Calculate start month of the previous quarter (0, 3, 6, or 9)
+        const prevQuarterStartMonth = prevQuarter * 3;
+
+        // Set from date to first day of the previous quarter
         fromDate = new Date(prevQuarterYear, prevQuarterStartMonth, 1);
 
-        // Calculate end date (last day of the quarter)
+        // Set to date to last day of the previous quarter
         toDate = new Date(prevQuarterYear, prevQuarterStartMonth + 3, 0);
+
+        console.log(
+          `Previous Quarter: ${fromDate.toISOString()} to ${toDate.toISOString()}`
+        );
         break;
       case "currentYear":
         // From January 1st of current year to today
