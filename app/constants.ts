@@ -137,3 +137,70 @@ export const INTERVALS = [
   { value: 'week', label: 'Weekly' },
   { value: 'month', label: 'Monthly' },
 ];
+
+
+// Technical indicators constants
+export const API_TOKEN = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIzS0NIRUYiLCJqdGkiOiI2N2U2OTE3OGZmM2RhYTQzYWQ4MzEwOWEiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaWF0IjoxNzQzMTYzNzY4LCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE3NDMxOTkyMDB9.FmCUAB2zTeWb2hEazxB6mP-TYCrimIk7qHYZt5gJ0Bw";
+
+// API base URL
+export const API_BASE_URL = "https://api.upstox.com/v2";
+
+// WebSocket authorization endpoint
+export const WS_AUTH_ENDPOINT = "https://api-v2.upstox.com/feed/market-data-feed/authorize";
+// Moving Average Periods
+export const MA_PERIODS = [
+  { value: 4, label: "4 Days" },
+  { value: 9, label: "9 Days" },
+  { value: 18, label: "18 Days" },
+  { value: 50, label: "50 Days" },
+  { value: 200, label: "200 Days" },
+  { value: 250, label: "50 Weeks" },
+  { value: 1000, label: "200 Weeks" },
+];
+
+// Moving Average Types
+export const MA_TYPES = [
+  { value: "SMA", label: "Simple Moving Average" },
+  { value: "EMA", label: "Exponential Moving Average" },
+];
+
+// ATR Types
+export const ATR_TYPES = [
+  { value: "ATR", label: "Average True Range" },
+  { value: "WATR", label: "Wilder's ATR" },
+  { value: "MATR", label: "Modified ATR" },
+  { value: "VATR", label: "Volume-Adjusted ATR" },
+];
+
+// Default ATR Period
+export const DEFAULT_ATR_PERIOD = 14;
+
+// Default Moving Average Types by Period
+export const DEFAULT_MA_TYPE = {
+  4: "SMA",
+  9: "SMA",
+  18: "SMA",
+  50: "SMA",
+  200: "SMA",
+  250: "SMA",
+  1000: "SMA",
+};
+
+// Labels for Moving Averages
+export const MA_LABELS = {
+  4: "4AVG",
+  9: "9AVG",
+  18: "18AVG",
+  50: "50AVG",
+  200: "200AVG",
+  250: "W50AVG",
+  1000: "W200AVG",
+};
+
+// Common Price Fields for Technical Analysis
+export const PRICE_FIELDS = [
+  { value: "close", label: "Close" },
+  { value: "open", label: "Open" },
+  { value: "high", label: "High" },
+  { value: "low", label: "Low" },
+];

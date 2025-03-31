@@ -10,7 +10,14 @@ import {
   endOfMonth,
   subMonths,
 } from "date-fns";
-import { Calendar as CalendarIcon, Search, RefreshCw } from "lucide-react";
+import {
+  Calendar as CalendarIcon,
+  Search,
+  RefreshCw,
+  Activity,
+} from "lucide-react";
+import { Buffer } from "buffer";
+import protobuf from "protobufjs";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -22,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 
 import { INSTRUMENTS, INTERVALS } from "./constants";
 import { Interval, OHLCData, APIResponse, Candle } from "./types";
@@ -46,11 +54,24 @@ interface TimeframeCardProps {
   onRefresh: () => void;
 }
 
+interface RealTimeCardProps {
+  instrument: string;
+  wsStatus: boolean;
+}
+
 interface StatsData {
   opening: number;
   closing: number;
   highest: number;
   lowest: number;
+}
+
+interface RealTimeOHLC {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  lastUpdated: string;
 }
 
 type Timeframe =
@@ -63,7 +84,8 @@ type Timeframe =
   | "currentQuarter"
   | "previousQuarter"
   | "currentYear"
-  | "previousYear";
+  | "previousYear"
+  | "realTime";
 
 const transformCandle = (candle: Candle): OHLCData => ({
   timestamp: candle[0],
@@ -230,10 +252,6 @@ function TimeframeCard({
 
         // Set to date to last day of the previous quarter
         toDate = new Date(prevQuarterYear, prevQuarterStartMonth + 3, 0);
-
-        console.log(
-          `Previous Quarter: ${fromDate.toISOString()} to ${toDate.toISOString()}`
-        );
         break;
       case "currentYear":
         // From January 1st of current year to today
@@ -263,10 +281,6 @@ function TimeframeCard({
     const formattedToDate = format(toDate, "yyyy-MM-dd");
 
     try {
-      console.log(
-        `Fetching ${timeframe}: from ${formattedFromDate} to ${formattedToDate}`
-      );
-
       const response = await fetch(
         `https://api.upstox.com/v2/historical-candle/${instrument}/${interval}/${formattedToDate}/${formattedFromDate}`
       );
@@ -285,7 +299,6 @@ function TimeframeCard({
         const candles = result.data.candles.map(transformCandle);
 
         // Sort candles by timestamp in descending order (newest first)
-        // This ensures consistent data interpretation regardless of API response order
         candles.sort(
           (a, b) =>
             new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
@@ -388,10 +401,284 @@ function TimeframeCard({
   );
 }
 
+// Real-time OHLC Card component
+function RealTimeCard({
+  instrument,
+  wsStatus,
+}: RealTimeCardProps): JSX.Element {
+  const [realTimeData, setRealTimeData] = useState<RealTimeOHLC | null>(null);
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Initialize Protobuf
+  useEffect(() => {
+    const initProtobuf = async () => {
+      try {
+        const protoPath = "/marketDataFeed.proto"; // Path relative to the public folder
+        const root = await protobuf.load(protoPath);
+        return root;
+      } catch (error) {
+        console.error("Failed to initialize Protobuf:", error);
+        setError("Failed to initialize WebSocket connection");
+        setIsLoading(false);
+        return null;
+      }
+    };
+
+    initProtobuf();
+  }, []);
+
+  // Map instrument key to WebSocket instrument format
+  const getWebSocketInstrumentKey = (upstoxInstrument: string): string => {
+    // This mapping function should be customized based on your specific instrument keys
+    // Format: "NSE_EQ|INE669E01016" or similar
+    const instrumentMap: Record<string, string> = {
+      // Add mappings for your instruments here
+      "NSE_INDEX|Nifty 50": "NSE_INDEX|Nifty 50",
+      "NSE_INDEX|Nifty Bank": "NSE_INDEX|Nifty Bank",
+      "NSE_EQ|INE669E01016": "NSE_EQ|INE669E01016", // Example
+    };
+
+    return instrumentMap[upstoxInstrument] || "NSE_INDEX|Nifty 50"; // Default fallback
+  };
+
+  // Function to get WebSocket URL
+  const getWebSocketUrl = async (): Promise<string> => {
+    const apiUrl = "https://api-v2.upstox.com/feed/market-data-feed/authorize";
+    const headers = {
+      "Content-type": "application/json",
+      Authorization:
+        "Bearer eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIzS0NIRUYiLCJqdGkiOiI2N2U3NzRjMmE4ZTMwMzUyMTRlMTVlMTgiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaWF0IjoxNzQzMjIxOTU0LCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE3NDMyODU2MDB9.o_6lEiaCHczFUoMrxhh4XyDEQadyAW0eiccdwo1CzDE",
+    };
+
+    try {
+      const response = await fetch(apiUrl, {
+        method: "GET",
+        headers: headers,
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to get WebSocket URL");
+      }
+
+      const res = await response.json();
+      return res.data.authorizedRedirectUri;
+    } catch (error) {
+      console.error("Error getting WebSocket URL:", error);
+      throw error;
+    }
+  };
+
+  // Helper functions for handling Blob and ArrayBuffer
+  const blobToArrayBuffer = async (blob: Blob): Promise<ArrayBuffer> => {
+    if ("arrayBuffer" in blob) return await blob.arrayBuffer();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () =>
+        reject(new Error("Failed to read blob as array buffer"));
+      reader.readAsArrayBuffer(blob);
+    });
+  };
+
+  // Connect to WebSocket
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let protobufRoot: any = null;
+
+    const connectWebSocket = async () => {
+      try {
+        setIsLoading(true);
+
+        // Load protobuf definition
+        protobufRoot = await protobuf.load("/marketDataFeed.proto");
+        if (!protobufRoot) {
+          throw new Error("Failed to load Protobuf definition");
+        }
+
+        // Get WebSocket URL
+        const wsUrl = await getWebSocketUrl();
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          setIsConnected(true);
+          setIsLoading(false);
+          console.log("WebSocket connected");
+
+          const instrumentKey = getWebSocketInstrumentKey(instrument);
+
+          // Subscribe to instrument data
+          const data = {
+            guid: "tradingview-realtime",
+            method: "sub",
+            data: {
+              mode: "full",
+              instrumentKeys: [instrumentKey],
+            },
+          };
+
+          if (ws) {
+            ws.send(Buffer.from(JSON.stringify(data)));
+          } else {
+            console.error("WebSocket is not initialized.");
+          }
+        };
+
+        ws.onclose = () => {
+          setIsConnected(false);
+          console.log("WebSocket disconnected");
+        };
+
+        ws.onmessage = async (event) => {
+          try {
+            const arrayBuffer = await blobToArrayBuffer(event.data);
+            const buffer = Buffer.from(arrayBuffer);
+
+            // Decode protobuf message
+            const FeedResponse = protobufRoot.lookupType(
+              "com.upstox.marketdatafeeder.rpc.proto.FeedResponse"
+            );
+
+            const response = FeedResponse.decode(buffer);
+
+            // Extract OHLC data from the response
+            // Note: This extraction logic may need to be adjusted based on the actual structure
+            if (response && response.feeds && response.feeds.length > 0) {
+              const feed = response.feeds[0];
+
+              // Example extraction - adjust based on actual response structure
+              if (feed.marketFullFeed) {
+                const marketData = feed.marketFullFeed;
+
+                setRealTimeData({
+                  open: parseFloat(marketData.ohlc?.open || "0"),
+                  high: parseFloat(marketData.ohlc?.high || "0"),
+                  low: parseFloat(marketData.ohlc?.low || "0"),
+                  close: parseFloat(marketData.ohlc?.close || "0"),
+                  lastUpdated: new Date().toLocaleTimeString(),
+                });
+              }
+            }
+          } catch (error) {
+            console.error("Error processing WebSocket message:", error);
+          }
+        };
+
+        ws.onerror = (error) => {
+          setIsConnected(false);
+          setError("WebSocket connection error");
+          setIsLoading(false);
+          console.error("WebSocket error:", error);
+        };
+      } catch (error) {
+        setIsConnected(false);
+        setError("Failed to establish WebSocket connection");
+        setIsLoading(false);
+        console.error("WebSocket connection error:", error);
+      }
+    };
+
+    connectWebSocket();
+
+    // Cleanup function
+    return () => {
+      if (ws) {
+        ws.close();
+      }
+    };
+  }, [instrument]);
+
+  if (isLoading) {
+    return (
+      <Card className="col-span-1">
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">Real-Time OHLC</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-center py-4">
+            <RefreshCw className="h-6 w-6 animate-spin text-gray-400" />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (error || !isConnected) {
+    return (
+      <Card className="col-span-1">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-sm font-medium">Real-Time OHLC</CardTitle>
+          <Badge variant="outline" className="text-red-500 border-red-500">
+            Disconnected
+          </Badge>
+        </CardHeader>
+        <CardContent>
+          <div className="text-sm text-gray-500">
+            {error || "WebSocket connection unavailable"}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="col-span-1">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="text-sm font-medium">Real-Time OHLC</CardTitle>
+        <div className="flex items-center space-x-2">
+          <Badge variant="outline" className="text-green-500 border-green-500">
+            Live
+          </Badge>
+          <Activity className="h-4 w-4 text-green-500 animate-pulse" />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {realTimeData ? (
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <span className="text-xs text-gray-500">Open</span>
+                <div className="text-lg font-bold">
+                  {realTimeData.open.toFixed(2)}
+                </div>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500">Close</span>
+                <div className="text-lg font-bold">
+                  {realTimeData.close.toFixed(2)}
+                </div>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500">High</span>
+                <div className="text-lg font-bold">
+                  {realTimeData.high.toFixed(2)}
+                </div>
+              </div>
+              <div>
+                <span className="text-xs text-gray-500">Low</span>
+                <div className="text-lg font-bold">
+                  {realTimeData.low.toFixed(2)}
+                </div>
+              </div>
+            </div>
+            <div className="text-xs text-gray-500 text-right mt-2">
+              Last updated: {realTimeData.lastUpdated}
+            </div>
+          </>
+        ) : (
+          <div className="text-sm text-gray-500">Waiting for data...</div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function TradingView(): JSX.Element {
   const [interval, setInterval] = useState<Interval>("day");
   const [instrument, setInstrument] = useState<string>(INSTRUMENTS[0].key);
   const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
+  const [wsStatus, setWsStatus] = useState<boolean>(false);
 
   const handleFilterInstrument = (instrumentKey: string): void => {
     setInstrument(instrumentKey);
@@ -406,6 +693,7 @@ export default function TradingView(): JSX.Element {
     INSTRUMENTS.find((inst) => inst.key === instrument)?.label || "";
 
   const timeframes: { title: string; id: Timeframe }[] = [
+    { title: "Real-Time", id: "realTime" },
     { title: "Previous Day", id: "previousDay" },
     { title: "3-Day OHLC", id: "threeDays" },
     { title: "Current Week", id: "currentWeek" },
@@ -472,17 +760,23 @@ export default function TradingView(): JSX.Element {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {timeframes.map((tf) => (
-          <TimeframeCard
-            key={`${tf.id}-${refreshTrigger}`}
-            title={tf.title}
-            timeframe={tf.id}
-            instrument={instrument}
-            interval={interval}
-            refreshTrigger={refreshTrigger}
-            onRefresh={handleGlobalRefresh}
-          />
-        ))}
+        {/* Real-time data as the first card */}
+        <RealTimeCard instrument={instrument} wsStatus={wsStatus} />
+
+        {/* Display all other timeframe cards except real-time which is handled separately */}
+        {timeframes
+          .filter((tf) => tf.id !== "realTime")
+          .map((tf) => (
+            <TimeframeCard
+              key={`${tf.id}-${refreshTrigger}`}
+              title={tf.title}
+              timeframe={tf.id}
+              instrument={instrument}
+              interval={interval}
+              refreshTrigger={refreshTrigger}
+              onRefresh={handleGlobalRefresh}
+            />
+          ))}
       </div>
     </div>
   );

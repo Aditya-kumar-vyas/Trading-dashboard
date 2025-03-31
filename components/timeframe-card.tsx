@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import {
   format,
   subDays,
@@ -10,28 +10,16 @@ import {
   endOfMonth,
   subMonths,
 } from "date-fns";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Activity } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { useMarketData } from "@/hooks/useMarketData";
-import { Interval, OHLCData, APIResponse, Candle } from "./types";
 
-// Type definitions
-export type Timeframe =
-  | "currentDay"
-  | "previousDay"
-  | "threeDays"
-  | "currentWeek"
-  | "previousWeek"
-  | "currentMonth"
-  | "previousMonth"
-  | "currentQuarter"
-  | "previousQuarter"
-  | "currentYear"
-  | "previousYear";
+import { Interval, Timeframe, APIResponse, OHLCData } from "../app/types";
+import { useMarketData } from "./market-data-context";
+import { transformCandle } from "../lib/utils";
 
-export interface TimeframeCardProps {
+interface TimeframeCardProps {
   title: string;
   timeframe: Timeframe;
   instrument: string;
@@ -47,15 +35,7 @@ interface StatsData {
   lowest: number;
 }
 
-const transformCandle = (candle: Candle): OHLCData => ({
-  timestamp: candle[0],
-  open: candle[1],
-  high: candle[2],
-  low: candle[3],
-  close: candle[4],
-});
-
-export function TimeframeCard({
+export default function TimeframeCard({
   title,
   timeframe,
   instrument,
@@ -66,16 +46,19 @@ export function TimeframeCard({
   const [data, setData] = useState<StatsData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [isRealtime, setIsRealtime] = useState<boolean>(false);
-  const { marketData, isConnected, lastUpdated } = useMarketData();
+  const { isConnected, marketData } = useMarketData();
 
-  // Maps exchange-specific instrument keys to the instrument format needed for our API
-  const mapInstrumentKey = (key: string): string => {
-    // Example: Convert NSE_INDEX|Nifty 50 to NSE_INDEX%7CNifty%2050
-    if (key.includes("|")) {
-      return key.replace("|", "%7C").replace(" ", "%20");
-    }
-    return key;
+  // Check if we should use real-time data for this timeframe
+  const useRealTimeData = (): boolean => {
+    // Only attempt to use real-time data for current day timeframe
+    if (timeframe !== "currentDay") return false;
+
+    // Make sure we're connected AND have data for this instrument
+    return (
+      isConnected &&
+      marketData[instrument] &&
+      marketData[instrument].dailyOHLC !== undefined
+    );
   };
 
   const getDateRangeForTimeframe = (): { fromDate: Date; toDate: Date } => {
@@ -85,6 +68,7 @@ export function TimeframeCard({
 
     switch (timeframe) {
       case "currentDay":
+        // For current day, set fromDate to start of today
         fromDate = new Date(
           today.getFullYear(),
           today.getMonth(),
@@ -92,16 +76,20 @@ export function TimeframeCard({
         );
         break;
       case "previousDay":
+        // For previous day, set both from and to date to yesterday
         fromDate = subDays(today, 1);
         toDate = subDays(today, 1);
         break;
       case "threeDays":
-        fromDate = subDays(today, 3);
+        // Last 3 days including today
+        fromDate = subDays(today, 2);
         break;
       case "currentWeek":
+        // From Monday of current week to today
         fromDate = startOfWeek(today, { weekStartsOn: 1 }); // Monday
         break;
       case "previousWeek":
+        // Previous full week (Monday to Friday)
         const lastWeekStart = startOfWeek(subDays(today, 7), {
           weekStartsOn: 1,
         });
@@ -109,35 +97,44 @@ export function TimeframeCard({
         toDate = endOfWeek(lastWeekStart, { weekStartsOn: 1 });
         break;
       case "currentMonth":
+        // From 1st of current month to today
         fromDate = startOfMonth(today);
         break;
       case "previousMonth":
+        // Full previous month
         const lastMonth = subMonths(today, 1);
         fromDate = startOfMonth(lastMonth);
         toDate = endOfMonth(lastMonth);
         break;
       case "currentQuarter":
+        // Current quarter (Q1: Jan-Mar, Q2: Apr-Jun, Q3: Jul-Sep, Q4: Oct-Dec)
         const currentMonth = today.getMonth();
         const quarterStartMonth = Math.floor(currentMonth / 3) * 3;
         fromDate = new Date(today.getFullYear(), quarterStartMonth, 1);
         break;
       case "previousQuarter":
-        // Previous quarter calculation
-        const prevQuarterEndMonth = Math.floor(today.getMonth() / 3) * 3 - 1;
-        const prevQuarterStartMonth = prevQuarterEndMonth - 2;
-        const prevQuarterYear =
-          today.getFullYear() + (prevQuarterEndMonth < 0 ? -1 : 0);
+        // Previous quarter
+        const currentQuarter = Math.floor(today.getMonth() / 3);
+        let prevQuarter, prevQuarterYear;
 
-        // Set from date to first day of the previous quarter
+        if (currentQuarter === 0) {
+          prevQuarter = 3; // Q4
+          prevQuarterYear = today.getFullYear() - 1;
+        } else {
+          prevQuarter = currentQuarter - 1;
+          prevQuarterYear = today.getFullYear();
+        }
+
+        const prevQuarterStartMonth = prevQuarter * 3;
         fromDate = new Date(prevQuarterYear, prevQuarterStartMonth, 1);
-
-        // Calculate end date (last day of the quarter)
         toDate = new Date(prevQuarterYear, prevQuarterStartMonth + 3, 0);
         break;
       case "currentYear":
+        // From January 1st of current year to today
         fromDate = new Date(today.getFullYear(), 0, 1);
         break;
       case "previousYear":
+        // Full previous year (Jan 1 to Dec 31)
         fromDate = new Date(today.getFullYear() - 1, 0, 1);
         toDate = new Date(today.getFullYear() - 1, 11, 31);
         break;
@@ -148,86 +145,35 @@ export function TimeframeCard({
     return { fromDate, toDate };
   };
 
-  // Function to get real-time data from WebSocket feed
-  const getRealtimeData = (): StatsData | null => {
-    // Map your instrument key to the format used in the WebSocket feed
-    let wsInstrumentKey = instrument;
-
-    // For index instruments, they might be in a different format in WS feed
-    // Example: Convert NSE_INDEX%7CNifty%2050 to NSE_INDEX|Nifty 50
-    if (instrument.includes("%7C")) {
-      wsInstrumentKey = instrument.replace("%7C", "|").replace("%20", " ");
-    }
-
-    // Check if we have data for this instrument in the WS feed
-    const instrumentData = marketData[wsInstrumentKey];
-    if (!instrumentData || !instrumentData.ohlcData) return null;
-
-    // Map timeframe to interval in the WebSocket data
-    let wsInterval: string;
-    switch (timeframe) {
-      case "currentDay":
-        wsInterval = "1d";
-        break;
-      case "threeDays":
-      case "currentWeek":
-        wsInterval = "1d";
-        break;
-      case "currentMonth":
-        wsInterval = "1d";
-        break;
-      default:
-        // For timeframes that shouldn't use real-time data
-        return null;
-    }
-
-    // Get OHLC data for the appropriate interval
-    const ohlcData = instrumentData.ohlcData[wsInterval];
-    if (!ohlcData) return null;
-
-    return {
-      opening: ohlcData.open,
-      closing: ohlcData.close,
-      highest: ohlcData.high,
-      lowest: ohlcData.low,
-    };
-  };
-
   const fetchData = async (): Promise<void> => {
+    // Check if we should use real-time data
+    if (useRealTimeData()) {
+      const realTimeData = marketData[instrument];
+      const dailyOHLC = realTimeData.dailyOHLC;
+
+      setData({
+        opening: parseFloat(dailyOHLC.open),
+        closing: parseFloat(dailyOHLC.close),
+        highest: parseFloat(dailyOHLC.high),
+        lowest: parseFloat(dailyOHLC.low),
+      });
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
-    // First, check if we can use real-time data
-    if (
-      ["currentDay", "threeDays", "currentWeek", "currentMonth"].includes(
-        timeframe
-      ) &&
-      isConnected
-    ) {
-      const realtimeData = getRealtimeData();
-      if (realtimeData) {
-        setData(realtimeData);
-        setIsRealtime(true);
-        setIsLoading(false);
-        return;
-      }
-    }
+    const { fromDate, toDate } = getDateRangeForTimeframe();
 
-    // If no real-time data available, fall back to API
-    setIsRealtime(false);
+    // The API expects dates in format: to_date/from_date
+    const formattedFromDate = format(fromDate, "yyyy-MM-dd");
+    const formattedToDate = format(toDate, "yyyy-MM-dd");
 
     try {
-      const { fromDate, toDate } = getDateRangeForTimeframe();
-
-      // Important: The API expects dates in reversed order: to_date/from_date
-      const formattedFromDate = format(fromDate, "yyyy-MM-dd");
-      const formattedToDate = format(toDate, "yyyy-MM-dd");
-
-      // Console log to debug the API call
-      const apiUrl = `https://api.upstox.com/v2/historical-candle/${instrument}/${interval}/${formattedToDate}/${formattedFromDate}`;
-      console.log(`Fetching ${timeframe}: ${apiUrl}`);
-
-      const response = await fetch(apiUrl);
+      const response = await fetch(
+        `https://api.upstox.com/v2/historical-candle/${instrument}/${interval}/${formattedToDate}/${formattedFromDate}`
+      );
 
       if (!response.ok) {
         throw new Error(`HTTP error! Status: ${response.status}`);
@@ -243,9 +189,8 @@ export function TimeframeCard({
         const candles = result.data.candles.map(transformCandle);
 
         // Sort candles by timestamp in descending order (newest first)
-        // This ensures consistent data interpretation regardless of API response order
         candles.sort(
-          (a: any, b: any) =>
+          (a, b) =>
             new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
 
@@ -256,9 +201,9 @@ export function TimeframeCard({
           // Closing price is the last candle's close (latest date)
           closing: candles[0].close,
           // Highest is max of all high prices in timeframe
-          highest: Math.max(...candles.map((d: any) => d.high)),
+          highest: Math.max(...candles.map((d) => d.high)),
           // Lowest is min of all low prices in timeframe
-          lowest: Math.min(...candles.map((d: any) => d.low)),
+          lowest: Math.min(...candles.map((d) => d.low)),
         });
       } else {
         setError("No data available for this timeframe");
@@ -272,27 +217,41 @@ export function TimeframeCard({
     }
   };
 
-  // Listen for real-time updates from the WebSocket feed
-  useEffect(() => {
-    // Only apply real-time updates to relevant timeframes
-    if (
-      ["currentDay", "threeDays", "currentWeek", "currentMonth"].includes(
-        timeframe
-      ) &&
-      isConnected
-    ) {
-      const realtimeData = getRealtimeData();
-      if (realtimeData) {
-        setData(realtimeData);
-        setIsRealtime(true);
-      }
-    }
-  }, [marketData, isConnected, lastUpdated]);
-
-  // Fetch initial data when component mounts or when dependencies change
+  // Fetch data when component mounts or dependencies change
   useEffect(() => {
     fetchData();
-  }, [instrument, interval, refreshTrigger, timeframe]);
+  }, [instrument, interval, refreshTrigger, timeframe, isConnected]);
+
+  // Also refetch data when WebSocket first connects or when marketData becomes available
+  useEffect(() => {
+    if (
+      timeframe === "currentDay" &&
+      isConnected &&
+      marketData[instrument]?.dailyOHLC
+    ) {
+      fetchData();
+    }
+  }, [isConnected, !!marketData[instrument]?.dailyOHLC]);
+
+  // Update data when real-time data changes
+  useEffect(() => {
+    // For Today timeframe, update whenever the marketData changes
+    if (
+      timeframe === "currentDay" &&
+      isConnected &&
+      marketData[instrument]?.dailyOHLC
+    ) {
+      const dailyOHLC = marketData[instrument].dailyOHLC;
+      setData({
+        opening: parseFloat(dailyOHLC.open),
+        closing: parseFloat(dailyOHLC.close),
+        highest: parseFloat(dailyOHLC.high),
+        lowest: parseFloat(dailyOHLC.low),
+      });
+      setIsLoading(false);
+      setError(null); // Clear any previous error state
+    }
+  }, [marketData[instrument]?.dailyOHLC, instrument, timeframe, isConnected]);
 
   const handleRefresh = (): void => {
     fetchData();
@@ -333,24 +292,24 @@ export function TimeframeCard({
   }
 
   return (
-    <Card
-      className={`col-span-1 ${isRealtime ? "border-green-500 border-2" : ""}`}
-    >
+    <Card className="col-span-1">
       <CardHeader className="flex flex-row items-center justify-between">
-        <div className="flex items-center">
-          <CardTitle className="text-sm font-medium">{title}</CardTitle>
-          {isRealtime && (
-            <Badge
-              variant="outline"
-              className="ml-2 bg-green-100 text-green-800 border-green-500"
-            >
-              LIVE
-            </Badge>
-          )}
+        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        <div className="flex items-center space-x-2">
+          {timeframe === "currentDay" &&
+            isConnected &&
+            marketData[instrument]?.dailyOHLC && (
+              <Badge
+                variant="outline"
+                className="text-green-500 border-green-500"
+              >
+                Live
+              </Badge>
+            )}
+          <Button variant="ghost" size="sm" onClick={handleRefresh}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
         </div>
-        <Button variant="ghost" size="sm" onClick={handleRefresh}>
-          <RefreshCw className="h-4 w-4" />
-        </Button>
       </CardHeader>
       <CardContent className="space-y-2">
         <div className="grid grid-cols-2 gap-2">
@@ -371,6 +330,13 @@ export function TimeframeCard({
             <div className="text-lg font-bold">{data.lowest.toFixed(2)}</div>
           </div>
         </div>
+
+        {timeframe === "currentDay" && isConnected && (
+          <div className="flex items-center justify-end mt-2">
+            <Activity className="h-3 w-3 text-green-500 animate-pulse mr-1" />
+            <span className="text-xs text-gray-500">Real-time data</span>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
