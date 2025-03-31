@@ -4,8 +4,6 @@ export type InstrumentOption = {
   label: string;
 };
 
-
-
 export type OHLCData = {
   timestamp: string;
   open: number;
