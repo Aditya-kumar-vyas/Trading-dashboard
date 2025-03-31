@@ -189,7 +189,7 @@ export default function PivotCard({
                   <div className="flex flex-col items-end">
                     <span
                       className={`font-bold ${
-                        isAbove ? "text-red-500" : "text-green-500"
+                        isAbove ? "text-green-500" : "text-red-500"
                       }`}
                     >
                       {formatPrice(price)}
@@ -222,7 +222,7 @@ export default function PivotCard({
                   <div className="flex flex-col items-end">
                     <span
                       className={`font-bold ${
-                        isAbove ? "text-red-500" : "text-green-500"
+                        isAbove ? "text-green-500" : "text-red-500"
                       }`}
                     >
                       {formatPrice(price)}
@@ -255,7 +255,7 @@ export default function PivotCard({
                   <div className="flex flex-col items-end">
                     <span
                       className={`font-bold ${
-                        isAbove ? "text-red-500" : "text-green-500"
+                        isAbove ? "text-green-500" : "text-red-500"
                       }`}
                     >
                       {formatPrice(price)}
@@ -288,7 +288,7 @@ export default function PivotCard({
                   <div className="flex flex-col items-end">
                     <span
                       className={`font-bold ${
-                        isAbove ? "text-red-500" : "text-green-500"
+                        isAbove ? "text-green-500" : "text-red-500"
                       }`}
                     >
                       {formatPrice(price)}
@@ -321,7 +321,7 @@ export default function PivotCard({
                   <div className="flex flex-col items-end">
                     <span
                       className={`font-bold ${
-                        isAbove ? "text-red-500" : "text-green-500"
+                        isAbove ? "text-green-500" : "text-red-500"
                       }`}
                     >
                       {formatPrice(price)}
@@ -354,7 +354,7 @@ export default function PivotCard({
                   <div className="flex flex-col items-end">
                     <span
                       className={`font-bold ${
-                        isAbove ? "text-red-500" : "text-green-500"
+                        isAbove ? "text-green-500" : "text-red-500"
                       }`}
                     >
                       {formatPrice(price)}
@@ -407,7 +407,7 @@ export default function PivotCard({
                   <div className="flex flex-col items-end">
                     <span
                       className={`font-bold ${
-                        isAbove ? "text-red-500" : "text-green-500"
+                        isAbove ? "text-green-500" : "text-red-500"
                       }`}
                     >
                       {price.toFixed(2)}
