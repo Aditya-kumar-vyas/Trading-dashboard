@@ -196,7 +196,7 @@ export default function TradingView(): JSX.Element {
         className="space-y-4"
       >
         <TabsList>
-          <TabsTrigger value="timeframes">OHLC Timeframes</TabsTrigger>
+          <TabsTrigger value="timeframes">OHLC</TabsTrigger>
           <TabsTrigger value="moving-averages">Moving Averages</TabsTrigger>
           <TabsTrigger value="atr">True Range Indicators</TabsTrigger>
           <TabsTrigger value="pivots">Pivot Points</TabsTrigger>
