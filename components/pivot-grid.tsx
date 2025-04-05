@@ -18,6 +18,14 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { OHLCData } from "@/app/types";
 import {
   PivotType,
@@ -39,10 +47,19 @@ import {
   DEFAULT_TREND_LOOKBACK,
 } from "@/lib/indicator-pivot-constants";
 
+// Pivot timeframe options
+const PIVOT_TIMEFRAMES = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "quarterly", label: "Quarterly" },
+];
+
 interface PivotCardProps {
   candles: OHLCData[];
   onRefresh: () => void;
   defaultPivotType?: PivotType;
+  defaultTimeframe?: string;
   title?: string;
 }
 
@@ -50,9 +67,11 @@ export default function PivotCard({
   candles,
   onRefresh,
   defaultPivotType = PivotType.STANDARD,
+  defaultTimeframe = "daily",
   title = "Pivot Points",
 }: PivotCardProps): JSX.Element {
   const [pivotType, setPivotType] = useState<PivotType>(defaultPivotType);
+  const [timeframe, setTimeframe] = useState<string>(defaultTimeframe);
   const [swingLookback, setSwingLookback] = useState<number>(
     DEFAULT_SWING_LOOKBACK
   );
@@ -61,11 +80,153 @@ export default function PivotCard({
   const [pivotData, setPivotData] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<string>("levels");
   const [expandedItems, setExpandedItems] = useState<string[]>([]);
+  const [timeframeCandles, setTimeframeCandles] = useState<OHLCData[]>([]);
+
+  // Process candles based on selected timeframe
+  useEffect(() => {
+    if (!candles || candles.length === 0) {
+      setTimeframeCandles([]);
+      return;
+    }
+
+    // Helper function to get date parts
+    const getDateParts = (dateStr: string) => {
+      const date = new Date(dateStr);
+      return {
+        year: date.getFullYear(),
+        month: date.getMonth(),
+        day: date.getDate(),
+        dayOfWeek: date.getDay(),
+        weekNumber: Math.ceil((date.getDate() + (date.getDay() || 7)) / 7),
+        quarter: Math.floor(date.getMonth() / 3) + 1,
+      };
+    };
+
+    // Create a copy of candles sorted by time (oldest first)
+    const sortedCandles = [...candles].sort(
+      (a, b) =>
+        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    // Process based on timeframe
+    let processedCandles: OHLCData[] = [];
+
+    switch (timeframe) {
+      case "daily":
+        // For daily, use candles as is
+        processedCandles = sortedCandles;
+        break;
+
+      case "weekly":
+        // Group candles by week
+        const weeklyMap = new Map<string, OHLCData[]>();
+
+        sortedCandles.forEach((candle) => {
+          const parts = getDateParts(candle.timestamp);
+          const weekKey = `${parts.year}-W${parts.weekNumber}`;
+
+          if (!weeklyMap.has(weekKey)) {
+            weeklyMap.set(weekKey, []);
+          }
+
+          weeklyMap.get(weekKey)!.push(candle);
+        });
+
+        // Create weekly candles
+        weeklyMap.forEach((weekCandles, weekKey) => {
+          if (weekCandles.length > 0) {
+            const firstCandle = weekCandles[0];
+            const lastCandle = weekCandles[weekCandles.length - 1];
+
+            processedCandles.push({
+              timestamp: firstCandle.timestamp, // Use first day as timestamp
+              open: firstCandle.open,
+              high: Math.max(...weekCandles.map((c) => c.high)),
+              low: Math.min(...weekCandles.map((c) => c.low)),
+              close: lastCandle.close,
+              volume: weekCandles.reduce((sum, c) => sum + (c.volume || 0), 0),
+            });
+          }
+        });
+        break;
+
+      case "monthly":
+        // Group candles by month
+        const monthlyMap = new Map<string, OHLCData[]>();
+
+        sortedCandles.forEach((candle) => {
+          const date = new Date(candle.timestamp);
+          const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+
+          if (!monthlyMap.has(monthKey)) {
+            monthlyMap.set(monthKey, []);
+          }
+
+          monthlyMap.get(monthKey)!.push(candle);
+        });
+
+        // Create monthly candles
+        monthlyMap.forEach((monthCandles, monthKey) => {
+          if (monthCandles.length > 0) {
+            const firstCandle = monthCandles[0];
+            const lastCandle = monthCandles[monthCandles.length - 1];
+
+            processedCandles.push({
+              timestamp: firstCandle.timestamp, // Use first day as timestamp
+              open: firstCandle.open,
+              high: Math.max(...monthCandles.map((c) => c.high)),
+              low: Math.min(...monthCandles.map((c) => c.low)),
+              close: lastCandle.close,
+              volume: monthCandles.reduce((sum, c) => sum + (c.volume || 0), 0),
+            });
+          }
+        });
+        break;
+
+      case "quarterly":
+        // Group candles by quarter
+        const quarterlyMap = new Map<string, OHLCData[]>();
+
+        sortedCandles.forEach((candle) => {
+          const parts = getDateParts(candle.timestamp);
+          const quarterKey = `${parts.year}-Q${parts.quarter}`;
+
+          if (!quarterlyMap.has(quarterKey)) {
+            quarterlyMap.set(quarterKey, []);
+          }
+
+          quarterlyMap.get(quarterKey)!.push(candle);
+        });
+
+        // Create quarterly candles
+        quarterlyMap.forEach((quarterCandles, quarterKey) => {
+          if (quarterCandles.length > 0) {
+            const firstCandle = quarterCandles[0];
+            const lastCandle = quarterCandles[quarterCandles.length - 1];
+
+            processedCandles.push({
+              timestamp: firstCandle.timestamp, // Use first day as timestamp
+              open: firstCandle.open,
+              high: Math.max(...quarterCandles.map((c) => c.high)),
+              low: Math.min(...quarterCandles.map((c) => c.low)),
+              close: lastCandle.close,
+              volume: quarterCandles.reduce(
+                (sum, c) => sum + (c.volume || 0),
+                0
+              ),
+            });
+          }
+        });
+        break;
+    }
+
+    setTimeframeCandles(processedCandles);
+  }, [candles, timeframe]);
 
   // Calculate pivot points
   const calculatePivots = () => {
-    if (!candles || candles.length < 2) {
-      setError("Not enough data to calculate pivot points");
+    if (!timeframeCandles || timeframeCandles.length < 2) {
+      setError(`Not enough ${timeframe} data to calculate pivot points`);
       setIsLoading(false);
       return;
     }
@@ -74,17 +235,17 @@ export default function PivotCard({
     setError(null);
 
     try {
-      // Get all pivot points
-      const allPivots = getAllPivotPoints(candles);
+      // Get all pivot points using the timeframe-adjusted candles
+      const allPivots = getAllPivotPoints(timeframeCandles);
       if (!allPivots) {
-        throw new Error("Failed to calculate pivot points");
+        throw new Error(`Failed to calculate ${timeframe} pivot points`);
       }
 
       // Set the pivot data
       setPivotData(allPivots);
 
       // Auto-expand the selected pivot type
-      let initialExpandedItems: React.SetStateAction<string[]> = [];
+      let initialExpandedItems = [];
       switch (pivotType) {
         case PivotType.STANDARD:
           initialExpandedItems = ["standard-pivots"];
@@ -107,8 +268,8 @@ export default function PivotCard({
       }
       setExpandedItems(initialExpandedItems);
     } catch (err) {
-      console.error("Error calculating pivot points:", err);
-      setError("Failed to calculate pivot points");
+      console.error(`Error calculating ${timeframe} pivot points:`, err);
+      setError(`Failed to calculate ${timeframe} pivot points`);
     } finally {
       setIsLoading(false);
     }
@@ -117,7 +278,7 @@ export default function PivotCard({
   // Calculate on mount and when dependencies change
   useEffect(() => {
     calculatePivots();
-  }, [candles, pivotType, swingLookback]);
+  }, [timeframeCandles, pivotType, swingLookback]);
 
   // Handle refresh click
   const handleRefresh = () => {
@@ -127,13 +288,17 @@ export default function PivotCard({
 
   // Get additional market information
   const getMarketInfo = () => {
-    if (!candles || candles.length === 0) return null;
+    if (!timeframeCandles || timeframeCandles.length === 0) return null;
 
-    const { swingHigh, swingLow } = findSwingHighLow(candles, swingLookback);
-    const uptrend = isUptrend(candles, DEFAULT_TREND_LOOKBACK);
-    const latestClose = candles[candles.length - 1].close;
-    const latestHigh = candles[candles.length - 1].high;
-    const latestLow = candles[candles.length - 1].low;
+    const { swingHigh, swingLow } = findSwingHighLow(
+      timeframeCandles,
+      swingLookback
+    );
+    const uptrend = isUptrend(timeframeCandles, DEFAULT_TREND_LOOKBACK);
+    const latestCandle = timeframeCandles[timeframeCandles.length - 1];
+    const latestClose = latestCandle.close;
+    const latestHigh = latestCandle.high;
+    const latestLow = latestCandle.low;
 
     return {
       swingHigh,
@@ -144,6 +309,7 @@ export default function PivotCard({
       latestLow,
       range: swingHigh - swingLow,
       swingLookback,
+      timeframe,
     };
   };
 
@@ -407,7 +573,7 @@ export default function PivotCard({
                   <div className="flex flex-col items-end">
                     <span
                       className={`font-bold ${
-                        isAbove ? "text-green-500" : "text-red-500"
+                        isAbove ? "text-red-500" : "text-green-500"
                       }`}
                     >
                       {price.toFixed(2)}
@@ -481,6 +647,7 @@ export default function PivotCard({
       latestLow,
       range,
       swingLookback,
+      timeframe,
     } = marketInfo;
 
     return (
@@ -490,6 +657,9 @@ export default function PivotCard({
           <div className="text-2xl font-bold">{latestClose.toFixed(2)}</div>
           <div className="text-xs text-gray-500">
             H: {latestHigh.toFixed(2)} L: {latestLow.toFixed(2)}
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            Based on {timeframe} data
           </div>
         </div>
 
@@ -732,6 +902,7 @@ export default function PivotCard({
                     className="flex justify-between items-center"
                   >
                     <span>{level.label}</span>
+
                     <span className="font-medium">{price.toFixed(2)}</span>
                   </div>
                 );
@@ -748,11 +919,26 @@ export default function PivotCard({
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-sm font-medium">{title}</CardTitle>
         <div className="flex items-center space-x-2">
+          {/* Timeframe Selection */}
+          <Select value={timeframe} onValueChange={setTimeframe}>
+            <SelectTrigger className="h-8 w-[110px] text-xs">
+              <SelectValue placeholder="Timeframe" />
+            </SelectTrigger>
+            <SelectContent>
+              {PIVOT_TIMEFRAMES.map((tf) => (
+                <SelectItem key={tf.value} value={tf.value}>
+                  {tf.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* Pivot Type Selection */}
           <Select
             value={pivotType}
             onValueChange={(value: any) => setPivotType(value)}
           >
-            <SelectTrigger className="h-8 w-[180px] text-xs">
+            <SelectTrigger className="h-8 w-[140px] text-xs">
               <SelectValue placeholder="Pivot Type" />
             </SelectTrigger>
             <SelectContent>
@@ -763,6 +949,7 @@ export default function PivotCard({
               ))}
             </SelectContent>
           </Select>
+
           <Button variant="ghost" size="sm" onClick={handleRefresh}>
             <RefreshCw className="h-4 w-4" />
           </Button>
@@ -799,14 +986,23 @@ export default function PivotCard({
 
             <TabsContent value="levels" className="space-y-4">
               {renderPivotLevels()}
+              <div className="text-xs text-gray-500 mt-4 text-right">
+                Based on {timeframe} data
+              </div>
             </TabsContent>
 
             <TabsContent value="fibonacci" className="space-y-4">
               {renderFibonacciLevels()}
+              <div className="text-xs text-gray-500 mt-4 text-right">
+                Based on {timeframe} data
+              </div>
             </TabsContent>
 
             <TabsContent value="allpivots" className="space-y-4">
               {renderAllPivots()}
+              <div className="text-xs text-gray-500 mt-4 text-right">
+                Based on {timeframe} data
+              </div>
             </TabsContent>
 
             <TabsContent value="market" className="space-y-4">
