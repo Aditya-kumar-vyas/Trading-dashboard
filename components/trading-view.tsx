@@ -23,6 +23,7 @@ import { transformCandle } from "@/lib/utils";
 import { useMarketData } from "./market-data-context";
 import SearchFilter from "./search-filter";
 import TimeframeCard from "./timeframe-card";
+import MorningRangeBreakoutCard from "./morning-range-breakout-card"; // Import the new component
 import TechnicalIndicatorCard from "./indicator-card";
 import PivotCard from "./pivot-grid";
 import { PivotType } from "../lib/indicator";
@@ -203,6 +204,18 @@ export default function TradingView(): JSX.Element {
         </TabsList>
 
         <TabsContent value="timeframes" className="space-y-4">
+          {/* Morning Range Breakout Card - Added at the top for prominence */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <MorningRangeBreakoutCard
+              instrument={instrument}
+              interval="1minute" // Using minute candles for more precise tracking
+              refreshTrigger={refreshTrigger}
+              onRefresh={handleGlobalRefresh}
+              title="Morning Range Breakout (9:15-10:00)"
+            />
+          </div>
+
+          {/* Regular Timeframe Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {timeframes.map((tf) => (
               <TimeframeCard

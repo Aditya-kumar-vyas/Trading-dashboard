@@ -114,16 +114,34 @@ export default function PivotCard({
     switch (timeframe) {
       case "daily":
         // For daily, use candles as is
-        processedCandles = sortedCandles;
+        const lastDailyCandle = sortedCandles[sortedCandles.length - 1];
+        console.log("lastDailyCandle", lastDailyCandle);
+        processedCandles = lastDailyCandle ? [lastDailyCandle] : [];
+
+        console.log("daily-candles data", processedCandles);
         break;
 
       case "weekly":
         // Group candles by week
         const weeklyMap = new Map<string, OHLCData[]>();
-
+        const currentDate = new Date();
+        const currentWeekNumber = Math.ceil(
+          (currentDate.getDate() + (currentDate.getDay() || 7)) / 7
+        );
+        const currentYear = currentDate.getFullYear();
+        console.log("Current Date", currentDate);
         sortedCandles.forEach((candle) => {
           const parts = getDateParts(candle.timestamp);
           const weekKey = `${parts.year}-W${parts.weekNumber}`;
+
+          // Skip the current running week
+          const isCurrentWeek =
+            parts.year === currentYear &&
+            parts.weekNumber === currentWeekNumber;
+
+          if (isCurrentWeek) {
+            return; // Skip current week candles
+          }
 
           if (!weeklyMap.has(weekKey)) {
             weeklyMap.set(weekKey, []);
@@ -131,6 +149,7 @@ export default function PivotCard({
 
           weeklyMap.get(weekKey)!.push(candle);
         });
+        console.log("Weekly Map", weeklyMap);
 
         // Create weekly candles
         weeklyMap.forEach((weekCandles, weekKey) => {
@@ -149,7 +168,6 @@ export default function PivotCard({
           }
         });
         break;
-
       case "monthly":
         // Group candles by month
         const monthlyMap = new Map<string, OHLCData[]>();
@@ -164,6 +182,8 @@ export default function PivotCard({
 
           monthlyMap.get(monthKey)!.push(candle);
         });
+
+        console.log("Monthly Map", monthlyMap);
 
         // Create monthly candles
         monthlyMap.forEach((monthCandles, monthKey) => {
