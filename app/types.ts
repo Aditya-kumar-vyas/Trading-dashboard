@@ -38,7 +38,8 @@ export type Interval =
   | "60minute" 
   | "day" 
   | "week" 
-  | "month";
+  | "month"
+  | "1minute"
 
 // Timeframe types for display
 export type Timeframe =
