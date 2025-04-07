@@ -208,7 +208,7 @@ export default function TradingView(): JSX.Element {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <MorningRangeBreakoutCard
               instrument={instrument}
-              interval="1minute" // Using minute candles for more precise tracking
+              // Using minute candles for more precise tracking
               refreshTrigger={refreshTrigger}
               onRefresh={handleGlobalRefresh}
               title="Morning Range Breakout (9:15-10:00)"
