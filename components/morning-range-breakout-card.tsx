@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { format, parseISO } from "date-fns";
-import { RefreshCw, TrendingUp, TrendingDown } from "lucide-react";
+import { RefreshCw, TrendingUp, TrendingDown, Activity } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +13,6 @@ import { Interval, APIResponse, OHLCData } from "../app/types";
 interface MorningRangeBreakoutCardProps {
   title?: string;
   instrument: string;
-  interval: Interval;
   refreshTrigger: number;
   onRefresh: () => void;
 }
@@ -21,14 +20,18 @@ interface MorningRangeBreakoutCardProps {
 export default function MorningRangeBreakoutCard({
   title = "Morning Range Breakout",
   instrument,
-  interval,
   refreshTrigger,
   onRefresh,
 }: MorningRangeBreakoutCardProps): JSX.Element {
   const [morningRange, setMorningRange] = useState<{
     high: number;
     low: number;
-  } | null>(null);
+    hasData: boolean;
+  }>({
+    high: 0,
+    low: 0,
+    hasData: false,
+  });
 
   const [breakouts, setBreakouts] = useState<{
     highBreakout: { price: number; timestamp: string } | null;
@@ -40,10 +43,43 @@ export default function MorningRangeBreakoutCard({
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [dailyCandles, setDailyCandles] = useState<OHLCData[]>([]);
+  const [morningPeriodComplete, setMorningPeriodComplete] =
+    useState<boolean>(false);
+
+  // Get market data context for real-time updates
   const { isConnected, marketData } = useMarketData();
 
-  // Fetch morning range and check for breakouts
-  const fetchData = async (): Promise<void> => {
+  // Initialize and check if we're in the morning range period (9:15-10:00 AM)
+  useEffect(() => {
+    const checkMorningPeriod = () => {
+      const now = new Date();
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+
+      // Check if current time is past 10:00 AM
+      if (hours > 10 || (hours === 10 && minutes >= 0)) {
+        setMorningPeriodComplete(true);
+      } else if (hours === 9 && minutes >= 15) {
+        // We're in the morning range period (9:15-10:00)
+        setMorningPeriodComplete(false);
+      } else {
+        // Before market open at 9:15
+        setMorningPeriodComplete(false);
+      }
+    };
+
+    // Check immediately
+    checkMorningPeriod();
+
+    // Set up interval to check every minute
+    const intervalId = setInterval(checkMorningPeriod, 60000);
+
+    return () => clearInterval(intervalId);
+  }, []);
+
+  // Fetch historical data for the morning range if we missed it
+  const fetchMorningRangeData = async (): Promise<void> => {
     setIsLoading(true);
     setError(null);
 
@@ -52,9 +88,9 @@ export default function MorningRangeBreakoutCard({
     const formattedDate = format(today, "yyyy-MM-dd");
 
     try {
-      // Fetch today's candles
+      // Fetch today's minute candles
       const response = await fetch(
-        `https://api.upstox.com/v2/historical-candle/${instrument}/${interval}/${formattedDate}/${formattedDate}`
+        `https://api.upstox.com/v2/historical-candle/${instrument}/1minute/${formattedDate}/${formattedDate}`
       );
 
       if (!response.ok) {
@@ -76,6 +112,9 @@ export default function MorningRangeBreakoutCard({
             new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
         );
 
+        // Save all candles for the day
+        setDailyCandles(candles);
+
         // Filter morning candles (9:15 AM to 10:00 AM)
         const morningCandles = candles.filter((candle) => {
           const candleTime = new Date(candle.timestamp);
@@ -93,50 +132,19 @@ export default function MorningRangeBreakoutCard({
           const morningHigh = Math.max(...morningCandles.map((c) => c.high));
           const morningLow = Math.min(...morningCandles.map((c) => c.low));
 
-          setMorningRange({ high: morningHigh, low: morningLow });
-
-          // Filter candles after 10:00 AM
-          const postMorningCandles = candles.filter((candle) => {
-            const candleTime = new Date(candle.timestamp);
-            const hours = candleTime.getHours();
-            const minutes = candleTime.getMinutes();
-
-            // Check if time is after 10:00 AM
-            return hours > 10 || (hours === 10 && minutes > 0);
+          setMorningRange({
+            high: morningHigh,
+            low: morningLow,
+            hasData: true,
           });
 
-          // Check for breakouts
-          let highBreakout = null;
-          let lowBreakout = null;
-
-          // Find first high breakout
-          for (const candle of postMorningCandles) {
-            if (candle.high > morningHigh) {
-              highBreakout = {
-                price: candle.high,
-                timestamp: candle.timestamp,
-              };
-              break;
-            }
+          // If we already have data for the complete morning period,
+          // check for historical breakouts
+          if (morningPeriodComplete) {
+            checkForBreakoutsInHistoricalData(candles, morningHigh, morningLow);
           }
-
-          // Find first low breakout
-          for (const candle of postMorningCandles) {
-            if (candle.low < morningLow) {
-              lowBreakout = {
-                price: candle.low,
-                timestamp: candle.timestamp,
-              };
-              break;
-            }
-          }
-
-          setBreakouts({
-            highBreakout,
-            lowBreakout,
-          });
         } else {
-          setError("No morning range data available (9:15 AM - 10:00 AM)");
+          setError("No morning range data available yet (9:15 AM - 10:00 AM)");
         }
       } else {
         setError("No data available for today");
@@ -150,6 +158,142 @@ export default function MorningRangeBreakoutCard({
     }
   };
 
+  // Check historical data for breakouts
+  const checkForBreakoutsInHistoricalData = (
+    candles: OHLCData[],
+    morningHigh: number,
+    morningLow: number
+  ): void => {
+    // Filter candles after 10:00 AM
+    const postMorningCandles = candles.filter((candle) => {
+      const candleTime = new Date(candle.timestamp);
+      const hours = candleTime.getHours();
+      const minutes = candleTime.getMinutes();
+
+      // Check if time is after 10:00 AM
+      return hours > 10 || (hours === 10 && minutes > 0);
+    });
+
+    // Find first high breakout
+    let highBreakout = null;
+    for (const candle of postMorningCandles) {
+      if (candle.high > morningHigh) {
+        highBreakout = {
+          price: candle.high,
+          timestamp: candle.timestamp,
+        };
+        break;
+      }
+    }
+
+    // Find first low breakout
+    let lowBreakout = null;
+    for (const candle of postMorningCandles) {
+      if (candle.low < morningLow) {
+        lowBreakout = {
+          price: candle.low,
+          timestamp: candle.timestamp,
+        };
+        break;
+      }
+    }
+
+    setBreakouts({
+      highBreakout,
+      lowBreakout,
+    });
+  };
+
+  // Update morning range in real-time while in the 9:15-10:00 period
+  useEffect(() => {
+    if (!isConnected || !marketData[instrument]) return;
+
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+
+    // Only update morning range if we're in the 9:15-10:00 period
+    if ((hours === 9 && minutes >= 15) || (hours === 10 && minutes === 0)) {
+      const currentPrice = parseFloat(marketData[instrument].ltp);
+
+      // Initialize morning range if it's the first data point
+      if (!morningRange.hasData) {
+        setMorningRange({
+          high: currentPrice,
+          low: currentPrice,
+          hasData: true,
+        });
+        return;
+      }
+
+      // Update high and low if current price exceeds them
+      setMorningRange((prev) => ({
+        high: Math.max(prev.high, currentPrice),
+        low: Math.min(prev.low, currentPrice),
+        hasData: true,
+      }));
+    }
+  }, [marketData[instrument]?.ltp, isConnected]);
+
+  // Check for breakouts in real-time after 10:00 AM
+  useEffect(() => {
+    if (
+      !isConnected ||
+      !marketData[instrument] ||
+      !morningRange.hasData ||
+      !morningPeriodComplete
+    )
+      return;
+
+    const currentPrice = parseFloat(marketData[instrument].ltp);
+    const currentTime = new Date();
+
+    // Check for high breakout if not already detected
+    if (!breakouts.highBreakout && currentPrice > morningRange.high) {
+      setBreakouts((prev) => ({
+        ...prev,
+        highBreakout: {
+          price: currentPrice,
+          timestamp: currentTime.toISOString(),
+        },
+      }));
+    }
+
+    // Check for low breakout if not already detected
+    if (!breakouts.lowBreakout && currentPrice < morningRange.low) {
+      setBreakouts((prev) => ({
+        ...prev,
+        lowBreakout: {
+          price: currentPrice,
+          timestamp: currentTime.toISOString(),
+        },
+      }));
+    }
+  }, [
+    marketData[instrument]?.ltp,
+    isConnected,
+    morningRange,
+    morningPeriodComplete,
+  ]);
+
+  // Initial data fetch when component mounts or refreshed
+  useEffect(() => {
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+
+    // If we're past market open (9:15 AM), fetch the data
+    if (hours > 9 || (hours === 9 && minutes >= 15)) {
+      fetchMorningRangeData();
+    } else {
+      // Before market open, show appropriate message
+      setError(
+        "Market not open yet. Morning range will be available after 9:15 AM"
+      );
+      setIsLoading(false);
+    }
+  }, [instrument, refreshTrigger]);
+
   // Format timestamp for display
   const formatTimestamp = (timestamp: string): string => {
     try {
@@ -160,51 +304,11 @@ export default function MorningRangeBreakoutCard({
     }
   };
 
-  // Fetch data when component mounts or dependencies change
-  useEffect(() => {
-    fetchData();
-  }, [instrument, interval, refreshTrigger]);
-
   // Handle manual refresh
   const handleRefresh = (): void => {
-    fetchData();
+    fetchMorningRangeData();
     if (onRefresh) onRefresh();
   };
-
-  // Check for real-time breakouts if using WebSocket
-  useEffect(() => {
-    if (isConnected && marketData[instrument] && morningRange) {
-      const currentPrice = parseFloat(marketData[instrument].ltp);
-      const currentTime = new Date();
-      const hours = currentTime.getHours();
-      const minutes = currentTime.getMinutes();
-
-      // Only check after 10:00 AM
-      if (hours > 10 || (hours === 10 && minutes > 0)) {
-        // Check for high breakout if not already detected
-        if (!breakouts.highBreakout && currentPrice > morningRange.high) {
-          setBreakouts((prev) => ({
-            ...prev,
-            highBreakout: {
-              price: currentPrice,
-              timestamp: currentTime.toISOString(),
-            },
-          }));
-        }
-
-        // Check for low breakout if not already detected
-        if (!breakouts.lowBreakout && currentPrice < morningRange.low) {
-          setBreakouts((prev) => ({
-            ...prev,
-            lowBreakout: {
-              price: currentPrice,
-              timestamp: currentTime.toISOString(),
-            },
-          }));
-        }
-      }
-    }
-  }, [marketData[instrument]?.ltp, isConnected, morningRange]);
 
   if (isLoading) {
     return (
@@ -221,7 +325,31 @@ export default function MorningRangeBreakoutCard({
     );
   }
 
-  if (error || !morningRange) {
+  // If it's before 9:15 AM, show waiting message
+  const now = new Date();
+  const hours = now.getHours();
+  const minutes = now.getMinutes();
+  const beforeMarketOpen = hours < 9 || (hours === 9 && minutes < 15);
+
+  if (beforeMarketOpen) {
+    return (
+      <Card className="col-span-1">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-sm font-medium">{title}</CardTitle>
+          <Button variant="ghost" size="sm" onClick={handleRefresh}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <div className="text-sm text-center py-4">
+            Waiting for market open at 9:15 AM to calculate morning range
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (error && !morningRange.hasData) {
     return (
       <Card className="col-span-1">
         <CardHeader className="flex flex-row items-center justify-between">
@@ -262,6 +390,11 @@ export default function MorningRangeBreakoutCard({
         <div>
           <h3 className="text-xs text-gray-500 mb-2">
             Morning Range (9:15-10:00)
+            {!morningPeriodComplete && (
+              <span className="ml-2 text-yellow-500">
+                <Activity className="h-3 w-3 inline animate-pulse" /> Updating
+              </span>
+            )}
           </h3>
           <div className="grid grid-cols-2 gap-2">
             <div>
@@ -281,7 +414,14 @@ export default function MorningRangeBreakoutCard({
 
         {/* Breakouts */}
         <div>
-          <h3 className="text-xs text-gray-500 mb-2">First Breakouts</h3>
+          <h3 className="text-xs text-gray-500 mb-2">
+            First Breakouts
+            {morningPeriodComplete && (
+              <span className="ml-2 text-green-500">
+                <Activity className="h-3 w-3 inline animate-pulse" /> Monitoring
+              </span>
+            )}
+          </h3>
           <div className="space-y-2">
             {/* High Breakout */}
             <div className="flex items-center justify-between border-b pb-2">
@@ -300,7 +440,9 @@ export default function MorningRangeBreakoutCard({
                     </div>
                   </div>
                 ) : (
-                  <span className="text-xs text-gray-500">Not yet</span>
+                  <span className="text-xs text-gray-500">
+                    {morningPeriodComplete ? "Not yet" : "Waiting for 10:00 AM"}
+                  </span>
                 )}
               </div>
             </div>
@@ -322,12 +464,26 @@ export default function MorningRangeBreakoutCard({
                     </div>
                   </div>
                 ) : (
-                  <span className="text-xs text-gray-500">Not yet</span>
+                  <span className="text-xs text-gray-500">
+                    {morningPeriodComplete ? "Not yet" : "Waiting for 10:00 AM"}
+                  </span>
                 )}
               </div>
             </div>
           </div>
         </div>
+
+        {/* Current Price Indicator for comparison */}
+        {isConnected && marketData[instrument] && (
+          <div className="border-t pt-2">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Current Price</span>
+              <span className="font-medium">
+                {parseFloat(marketData[instrument].ltp).toFixed(2)}
+              </span>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
