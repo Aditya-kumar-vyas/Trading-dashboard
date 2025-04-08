@@ -43,7 +43,6 @@ export default function MorningRangeBreakoutCard({
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [dailyCandles, setDailyCandles] = useState<OHLCData[]>([]);
   const [morningPeriodComplete, setMorningPeriodComplete] =
     useState<boolean>(false);
 
@@ -111,9 +110,6 @@ export default function MorningRangeBreakoutCard({
           (a, b) =>
             new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
         );
-
-        // Save all candles for the day
-        setDailyCandles(candles);
 
         // Filter morning candles (9:15 AM to 10:00 AM)
         const morningCandles = candles.filter((candle) => {
@@ -204,6 +200,37 @@ export default function MorningRangeBreakoutCard({
     });
   };
 
+  // Get current price from WebSocket data
+  const getCurrentPriceFromWebSocket = () => {
+    if (!isConnected || !marketData[instrument]) return null;
+
+    // Extract price from the WebSocket data structure
+    try {
+      const price = marketData[instrument]?.ff?.marketFF?.ltpc?.ltp;
+      return typeof price === "number" ? price : null;
+    } catch (err) {
+      console.error("Error extracting price from WebSocket data:", err);
+      return null;
+    }
+  };
+
+  // Get timestamp from WebSocket data
+  const getTimestampFromWebSocket = () => {
+    if (!isConnected || !marketData[instrument]) return null;
+
+    try {
+      const timestamp = marketData[instrument]?.ff?.marketFF?.ltpc?.ltt;
+      if (timestamp) {
+        // Convert timestamp to ISO string - it's usually in milliseconds
+        return new Date(parseInt(timestamp)).toISOString();
+      }
+      return null;
+    } catch (err) {
+      console.error("Error extracting timestamp from WebSocket data:", err);
+      return null;
+    }
+  };
+
   // Update morning range in real-time while in the 9:15-10:00 period
   useEffect(() => {
     if (!isConnected || !marketData[instrument]) return;
@@ -214,7 +241,9 @@ export default function MorningRangeBreakoutCard({
 
     // Only update morning range if we're in the 9:15-10:00 period
     if ((hours === 9 && minutes >= 15) || (hours === 10 && minutes === 0)) {
-      const currentPrice = parseFloat(marketData[instrument].ltp);
+      const currentPrice = getCurrentPriceFromWebSocket();
+
+      if (currentPrice === null) return;
 
       // Initialize morning range if it's the first data point
       if (!morningRange.hasData) {
@@ -233,7 +262,7 @@ export default function MorningRangeBreakoutCard({
         hasData: true,
       }));
     }
-  }, [marketData[instrument]?.ltp, isConnected]);
+  }, [marketData, isConnected]);
 
   // Check for breakouts in real-time after 10:00 AM
   useEffect(() => {
@@ -245,36 +274,35 @@ export default function MorningRangeBreakoutCard({
     )
       return;
 
-    const currentPrice = parseFloat(marketData[instrument].ltp);
-    const currentTime = new Date();
+    const currentPrice = getCurrentPriceFromWebSocket();
+    if (currentPrice === null) return;
 
     // Check for high breakout if not already detected
     if (!breakouts.highBreakout && currentPrice > morningRange.high) {
+      const timestamp = getTimestampFromWebSocket() || new Date().toISOString();
+
       setBreakouts((prev) => ({
         ...prev,
         highBreakout: {
           price: currentPrice,
-          timestamp: currentTime.toISOString(),
+          timestamp,
         },
       }));
     }
 
     // Check for low breakout if not already detected
     if (!breakouts.lowBreakout && currentPrice < morningRange.low) {
+      const timestamp = getTimestampFromWebSocket() || new Date().toISOString();
+
       setBreakouts((prev) => ({
         ...prev,
         lowBreakout: {
           price: currentPrice,
-          timestamp: currentTime.toISOString(),
+          timestamp,
         },
       }));
     }
-  }, [
-    marketData[instrument]?.ltp,
-    isConnected,
-    morningRange,
-    morningPeriodComplete,
-  ]);
+  }, [marketData, isConnected, morningRange, morningPeriodComplete]);
 
   // Initial data fetch when component mounts or refreshed
   useEffect(() => {
@@ -372,7 +400,7 @@ export default function MorningRangeBreakoutCard({
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-sm font-medium">{title}</CardTitle>
         <div className="flex items-center space-x-2">
-          {isConnected && (
+          {isConnected && marketData[instrument] && (
             <Badge
               variant="outline"
               className="text-green-500 border-green-500"
@@ -416,11 +444,14 @@ export default function MorningRangeBreakoutCard({
         <div>
           <h3 className="text-xs text-gray-500 mb-2">
             First Breakouts
-            {morningPeriodComplete && (
-              <span className="ml-2 text-green-500">
-                <Activity className="h-3 w-3 inline animate-pulse" /> Monitoring
-              </span>
-            )}
+            {morningPeriodComplete &&
+              !breakouts.highBreakout &&
+              !breakouts.lowBreakout && (
+                <span className="ml-2 text-green-500">
+                  <Activity className="h-3 w-3 inline animate-pulse" />{" "}
+                  Monitoring
+                </span>
+              )}
           </h3>
           <div className="space-y-2">
             {/* High Breakout */}
@@ -479,7 +510,7 @@ export default function MorningRangeBreakoutCard({
             <div className="flex justify-between items-center">
               <span className="text-xs text-gray-500">Current Price</span>
               <span className="font-medium">
-                {parseFloat(marketData[instrument].ltp).toFixed(2)}
+                {getCurrentPriceFromWebSocket()?.toFixed(2) || "Loading..."}
               </span>
             </div>
           </div>
