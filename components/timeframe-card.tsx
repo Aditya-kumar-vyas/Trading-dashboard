@@ -46,7 +46,22 @@ export default function TimeframeCard({
   const [data, setData] = useState<StatsData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [realTimePrice, setRealTimePrice] = useState<number | null>(null);
   const { isConnected, marketData } = useMarketData();
+
+  // Get current real-time price from WebSocket data
+  const getCurrentRealTimePrice = () => {
+    if (!isConnected || !marketData[instrument]) return null;
+
+    try {
+      // Extract last traded price from the WebSocket data
+      const ltp = marketData[instrument]?.ff?.marketFF?.ltpc?.ltp;
+      return typeof ltp === "number" ? ltp : null;
+    } catch (err) {
+      console.error("Error extracting real-time price:", err);
+      return null;
+    }
+  };
 
   // Check if we should use real-time data for this timeframe
   const useRealTimeData = (): boolean => {
@@ -253,6 +268,16 @@ export default function TimeframeCard({
     }
   }, [marketData[instrument]?.dailyOHLC, instrument, timeframe, isConnected]);
 
+  // Update real-time price when WebSocket data changes
+  useEffect(() => {
+    if (isConnected && marketData[instrument]) {
+      const currentPrice = getCurrentRealTimePrice();
+      if (currentPrice !== null) {
+        setRealTimePrice(currentPrice);
+      }
+    }
+  }, [marketData, isConnected, instrument]);
+
   const handleRefresh = (): void => {
     fetchData();
     if (onRefresh) onRefresh();
@@ -291,6 +316,46 @@ export default function TimeframeCard({
     );
   }
 
+  // Determine if bullish (closing > opening) or bearish (opening > closing)
+  const isBullish = data.closing > data.opening;
+  const priceColor = isBullish ? "text-green-600" : "text-red-600";
+  const bodyColor = isBullish ? "bg-green-500" : "bg-red-500";
+
+  // Calculate percentage change
+  const priceChange = data.closing - data.opening;
+  const percentChange = (priceChange / data.opening) * 100;
+
+  // Calculate candlestick dimensions
+  const candleHeight = 80; // Total height for the candlestick
+  const maxPrice = Math.max(data.highest, data.opening, data.closing);
+  const minPrice = Math.min(data.lowest, data.opening, data.closing);
+  const priceRange = maxPrice - minPrice;
+
+  // Calculate positions for the candlestick parts (as percentages of total height)
+  const getPosition = (price: number) => {
+    if (priceRange === 0) return 50; // Default to middle if no range
+    return ((maxPrice - price) / priceRange) * candleHeight;
+  };
+
+  const highPosition = getPosition(data.highest);
+  const lowPosition = getPosition(data.lowest);
+  const openPosition = getPosition(data.opening);
+  const closePosition = getPosition(data.closing);
+
+  // Calculate body start, end, and height
+  const bodyTop = isBullish ? closePosition : openPosition;
+  const bodyBottom = isBullish ? openPosition : closePosition;
+  const bodyHeight = Math.max(1, Math.abs(bodyBottom - bodyTop)); // Ensure minimum height of 1px
+
+  // Calculate wick dimensions
+  const upperWickHeight = bodyTop;
+  const lowerWickHeight = candleHeight - bodyBottom;
+
+  // Current price position (if available)
+  const currentPricePosition = realTimePrice
+    ? getPosition(realTimePrice)
+    : null;
+
   return (
     <Card className="col-span-1">
       <CardHeader className="flex flex-row items-center justify-between">
@@ -311,7 +376,8 @@ export default function TimeframeCard({
           </Button>
         </div>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-4">
+        {/* OHLC Values */}
         <div className="grid grid-cols-2 gap-2">
           <div>
             <span className="text-xs text-gray-500">Open</span>
@@ -319,7 +385,9 @@ export default function TimeframeCard({
           </div>
           <div>
             <span className="text-xs text-gray-500">Close</span>
-            <div className="text-lg font-bold">{data.closing.toFixed(2)}</div>
+            <div className={`text-lg font-bold ${priceColor}`}>
+              {data.closing.toFixed(2)}
+            </div>
           </div>
           <div>
             <span className="text-xs text-gray-500">High</span>
@@ -331,8 +399,65 @@ export default function TimeframeCard({
           </div>
         </div>
 
+        {/* Price Change */}
+        <div className={`flex justify-end ${priceColor}`}>
+          <span className="font-medium">
+            {priceChange >= 0 ? "+" : ""}
+            {priceChange.toFixed(2)} ({percentChange.toFixed(2)}%)
+          </span>
+        </div>
+
+        {/* Candlestick Visualization */}
+        <div className="relative h-20 mt-2 flex items-center justify-center">
+          {/* Container for the candlestick */}
+          <div className="relative h-full w-20">
+            {/* Upper Wick */}
+            {upperWickHeight > 0 && (
+              <div
+                className="absolute w-px bg-gray-800 left-1/2 transform -translate-x-1/2"
+                style={{
+                  top: `${highPosition}px`,
+                  height: `${upperWickHeight}px`,
+                }}
+              ></div>
+            )}
+
+            {/* Candle Body */}
+            <div
+              className={`absolute w-10 left-1/2 transform -translate-x-1/2 ${bodyColor}`}
+              style={{
+                top: `${bodyTop}px`,
+                height: `${bodyHeight}px`,
+              }}
+            ></div>
+
+            {/* Lower Wick */}
+            {lowerWickHeight > 0 && (
+              <div
+                className="absolute w-px bg-gray-800 left-1/2 transform -translate-x-1/2"
+                style={{
+                  top: `${bodyBottom}px`,
+                  height: `${lowerWickHeight}px`,
+                }}
+              ></div>
+            )}
+
+            {/* Current Price Line (if real-time data available) */}
+            {currentPricePosition !== null && (
+              <div
+                className="absolute w-full h-px bg-blue-500 left-0 z-10"
+                style={{ top: `${currentPricePosition}px` }}
+              >
+                <div className="absolute right-full mr-1 text-xs text-blue-500 font-medium">
+                  {realTimePrice?.toFixed(2)}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {timeframe === "currentDay" && isConnected && (
-          <div className="flex items-center justify-end mt-2">
+          <div className="flex items-center justify-end mt-1">
             <Activity className="h-3 w-3 text-green-500 animate-pulse mr-1" />
             <span className="text-xs text-gray-500">Real-time data</span>
           </div>

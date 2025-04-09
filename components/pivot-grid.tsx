@@ -114,9 +114,9 @@ export default function PivotCard({
     switch (timeframe) {
       case "daily":
         // For daily, use candles as is
-        const lastDailyCandle = sortedCandles[sortedCandles.length - 1];
-        console.log("lastDailyCandle", lastDailyCandle);
-        processedCandles = lastDailyCandle ? [lastDailyCandle] : [];
+        processedCandles = sortedCandles;
+        const dailyMap = new Map<string, OHLCData[]>();
+        const previous_day = new Date();
 
         console.log("daily-candles data", processedCandles);
         break;
