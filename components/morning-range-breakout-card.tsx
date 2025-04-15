@@ -89,7 +89,9 @@ export default function MorningRangeBreakoutCard({
     try {
       // Fetch today's minute candles
       const response = await fetch(
-        `https://api.upstox.com/v2/historical-candle/${instrument}/1minute/${formattedDate}/${formattedDate}`
+        `/api/historical-data?instrument=${encodeURIComponent(
+          instrument
+        )}&interval=1minute&to_date=${formattedDate}&from_date=${formattedDate}`
       );
 
       if (!response.ok) {

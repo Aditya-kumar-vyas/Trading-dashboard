@@ -33,6 +33,7 @@ import { Badge } from "@/components/ui/badge";
 
 import { INSTRUMENTS, INTERVALS } from "./constants";
 import { Interval, OHLCData, APIResponse, Candle } from "./types";
+import DebugPanel from "../components/debug-panel";
 
 // Define clear interfaces for props and state
 interface SearchFilterProps {
@@ -282,7 +283,9 @@ function TimeframeCard({
 
     try {
       const response = await fetch(
-        `https://api.upstox.com/v2/historical-candle/${instrument}/${interval}/${formattedToDate}/${formattedFromDate}`
+        `/api/historical-data?instrument=${encodeURIComponent(
+          instrument
+        )}&interval=${interval}&to_date=${formattedToDate}&from_date=${formattedFromDate}`
       );
 
       if (!response.ok) {
@@ -445,18 +448,8 @@ function RealTimeCard({
 
   // Function to get WebSocket URL
   const getWebSocketUrl = async (): Promise<string> => {
-    const apiUrl = "https://api-v2.upstox.com/feed/market-data-feed/authorize";
-    const headers = {
-      "Content-type": "application/json",
-      Authorization:
-        "Bearer eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIzS0NIRUYiLCJqdGkiOiI2N2U3NzRjMmE4ZTMwMzUyMTRlMTVlMTgiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaWF0IjoxNzQzMjIxOTU0LCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE3NDMyODU2MDB9.o_6lEiaCHczFUoMrxhh4XyDEQadyAW0eiccdwo1CzDE",
-    };
-
     try {
-      const response = await fetch(apiUrl, {
-        method: "GET",
-        headers: headers,
-      });
+      const response = await fetch(`/api/ws-auth`);
 
       if (!response.ok) {
         throw new Error("Failed to get WebSocket URL");
@@ -778,6 +771,8 @@ export default function TradingView(): JSX.Element {
             />
           ))}
       </div>
+
+      <DebugPanel />
     </div>
   );
 }

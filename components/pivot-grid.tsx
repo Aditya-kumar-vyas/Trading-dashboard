@@ -32,6 +32,7 @@ import {
   getAllPivotPoints,
   findSwingHighLow,
   isUptrend,
+  findMostRecentTradingDay,
 } from "../lib/indicator";
 import {
   PIVOT_TYPES,
@@ -46,6 +47,7 @@ import {
   DEFAULT_SWING_LOOKBACK,
   DEFAULT_TREND_LOOKBACK,
 } from "@/lib/indicator-pivot-constants";
+import { Badge } from "@/components/ui/badge";
 
 // Pivot timeframe options
 const PIVOT_TIMEFRAMES = [
@@ -255,14 +257,23 @@ export default function PivotCard({
     setError(null);
 
     try {
+      // Get most recent trading day candle for reference
+      const tradingDayCandle = findMostRecentTradingDay(timeframeCandles);
+      const tradingDate = tradingDayCandle
+        ? new Date(tradingDayCandle.timestamp)
+        : null;
+
       // Get all pivot points using the timeframe-adjusted candles
       const allPivots = getAllPivotPoints(timeframeCandles);
       if (!allPivots) {
         throw new Error(`Failed to calculate ${timeframe} pivot points`);
       }
 
-      // Set the pivot data
-      setPivotData(allPivots);
+      // Set the pivot data with the trading date used
+      setPivotData({
+        ...allPivots,
+        tradingDate: tradingDate, // Include the trading date used for calculations
+      });
 
       // Auto-expand the selected pivot type
       let initialExpandedItems = [];
@@ -719,218 +730,578 @@ export default function PivotCard({
     );
   };
 
-  // Render the accordion with all pivot types
+  // Render all pivot types in the card
   const renderAllPivots = () => {
     if (!pivotData) return null;
 
+    // Format trading date if available
+    const tradingDateDisplay = pivotData.tradingDate
+      ? `Based on data from ${pivotData.tradingDate.toLocaleDateString()}`
+      : "";
+
     return (
-      <Accordion
-        type="multiple"
-        value={expandedItems}
-        onValueChange={setExpandedItems}
-        className="w-full"
-      >
-        {/* Standard Pivots */}
-        <AccordionItem value="standard-pivots">
-          <AccordionTrigger className="text-sm font-medium">
-            Standard Pivot Points
-          </AccordionTrigger>
-          <AccordionContent>
-            <div className="space-y-2 py-2">
-              {STANDARD_PIVOT_LEVELS.map((level) => {
-                const price = pivotData.standard?.[level.key];
-                if (price === undefined) return null;
+      <div className="space-y-4">
+        {/* Trading date display if different from expected (holiday handling) */}
+        {tradingDateDisplay && (
+          <div className="text-xs text-amber-600 font-medium">
+            {tradingDateDisplay}
+          </div>
+        )}
 
-                return (
-                  <div
-                    key={level.key}
-                    className="flex justify-between items-center"
-                  >
-                    <span>{level.label}</span>
-                    <span className="font-medium">{price.toFixed(2)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </AccordionContent>
-        </AccordionItem>
+        <Accordion
+          type="multiple"
+          value={expandedItems}
+          onValueChange={setExpandedItems}
+          className="space-y-2"
+        >
+          {/* Standard Pivots */}
+          <AccordionItem
+            value="standard-pivots"
+            className="border p-2 rounded-md"
+          >
+            <AccordionTrigger className="py-2 hover:no-underline">
+              <div className="flex w-full justify-between items-center">
+                <span className="font-medium">Standard Pivots</span>
+                <div className="flex items-center">
+                  {pivotType === PivotType.STANDARD && (
+                    <Badge className="mr-2 bg-primary">Active</Badge>
+                  )}
+                </div>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="pt-2">
+              {pivotData.standard ? (
+                <div className="space-y-2">
+                  {STANDARD_PIVOT_LEVELS.map((level) => {
+                    const price = pivotData.standard?.[level.key];
+                    if (price === undefined) return null;
 
-        {/* Fibonacci Pivots */}
-        <AccordionItem value="fibonacci-pivots">
-          <AccordionTrigger className="text-sm font-medium">
-            Fibonacci Pivot Points
-          </AccordionTrigger>
-          <AccordionContent>
-            <div className="space-y-2 py-2">
-              {FIBONACCI_PIVOT_LEVELS.map((level) => {
-                const price = pivotData.fibonacci?.[level.key];
-                if (price === undefined) return null;
+                    const marketInfo = getMarketInfo();
+                    const latestClose = marketInfo?.latestClose || 0;
+                    const isAbove = price > latestClose;
 
-                return (
-                  <div
-                    key={level.key}
-                    className="flex justify-between items-center"
-                  >
-                    <span>{level.label}</span>
-                    <span className="font-medium">{price.toFixed(2)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </AccordionContent>
-        </AccordionItem>
+                    return (
+                      <div
+                        key={level.key}
+                        className="flex justify-between items-center"
+                      >
+                        <span className="font-medium">{level.label}</span>
+                        <div className="flex flex-col items-end">
+                          <span
+                            className={`font-bold ${
+                              isAbove ? "text-green-500" : "text-red-500"
+                            }`}
+                          >
+                            {price.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {isAbove ? "↑" : "↓"}{" "}
+                            {(
+                              ((price - latestClose) / latestClose) *
+                              100
+                            ).toFixed(2)}
+                            %
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
 
-        {/* Camarilla Pivots */}
-        <AccordionItem value="camarilla-pivots">
-          <AccordionTrigger className="text-sm font-medium">
-            Camarilla Pivot Points
-          </AccordionTrigger>
-          <AccordionContent>
-            <div className="space-y-2 py-2">
-              {CAMARILLA_PIVOT_LEVELS.map((level) => {
-                const price = pivotData.camarilla?.[level.key];
-                if (price === undefined) return null;
+                  {/* Button to set this as active */}
+                  {pivotType !== PivotType.STANDARD && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full mt-2"
+                      onClick={() => setPivotType(PivotType.STANDARD)}
+                    >
+                      Set as Active
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No standard pivot data available
+                </div>
+              )}
+            </AccordionContent>
+          </AccordionItem>
 
-                return (
-                  <div
-                    key={level.key}
-                    className="flex justify-between items-center"
-                  >
-                    <span>{level.label}</span>
-                    <span className="font-medium">{price.toFixed(2)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </AccordionContent>
-        </AccordionItem>
+          {/* Fibonacci Pivots */}
+          <AccordionItem
+            value="fibonacci-pivots"
+            className="border p-2 rounded-md"
+          >
+            <AccordionTrigger className="py-2 hover:no-underline">
+              <div className="flex w-full justify-between items-center">
+                <span className="font-medium">Fibonacci Pivots</span>
+                <div className="flex items-center">
+                  {pivotType === PivotType.FIBONACCI && (
+                    <Badge className="mr-2 bg-primary">Active</Badge>
+                  )}
+                </div>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="pt-2">
+              {pivotData.fibonacci ? (
+                <div className="space-y-2">
+                  {FIBONACCI_PIVOT_LEVELS.map((level) => {
+                    const price = pivotData.fibonacci?.[level.key];
+                    if (price === undefined) return null;
 
-        {/* Woodie Pivots */}
-        <AccordionItem value="woodie-pivots">
-          <AccordionTrigger className="text-sm font-medium">
-            Woodie Pivot Points
-          </AccordionTrigger>
-          <AccordionContent>
-            <div className="space-y-2 py-2">
-              {WOODIE_PIVOT_LEVELS.map((level) => {
-                const price = pivotData.woodie?.[level.key];
-                if (price === undefined) return null;
+                    const marketInfo = getMarketInfo();
+                    const latestClose = marketInfo?.latestClose || 0;
+                    const isAbove = price > latestClose;
 
-                return (
-                  <div
-                    key={level.key}
-                    className="flex justify-between items-center"
-                  >
-                    <span>{level.label}</span>
-                    <span className="font-medium">{price.toFixed(2)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </AccordionContent>
-        </AccordionItem>
+                    return (
+                      <div
+                        key={level.key}
+                        className="flex justify-between items-center"
+                      >
+                        <span className="font-medium">{level.label}</span>
+                        <div className="flex flex-col items-end">
+                          <span
+                            className={`font-bold ${
+                              isAbove ? "text-green-500" : "text-red-500"
+                            }`}
+                          >
+                            {price.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {isAbove ? "↑" : "↓"}{" "}
+                            {(
+                              ((price - latestClose) / latestClose) *
+                              100
+                            ).toFixed(2)}
+                            %
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
 
-        {/* DeMark Pivots */}
-        <AccordionItem value="demark-pivots">
-          <AccordionTrigger className="text-sm font-medium">
-            DeMark Pivot Points
-          </AccordionTrigger>
-          <AccordionContent>
-            <div className="space-y-2 py-2">
-              {DEMARK_PIVOT_LEVELS.map((level) => {
-                const price = pivotData.demark?.[level.key];
-                if (price === undefined) return null;
+                  {/* Button to set this as active */}
+                  {pivotType !== PivotType.FIBONACCI && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full mt-2"
+                      onClick={() => setPivotType(PivotType.FIBONACCI)}
+                    >
+                      Set as Active
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No Fibonacci pivot data available
+                </div>
+              )}
+            </AccordionContent>
+          </AccordionItem>
 
-                return (
-                  <div
-                    key={level.key}
-                    className="flex justify-between items-center"
-                  >
-                    <span>{level.label}</span>
-                    <span className="font-medium">{price.toFixed(2)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </AccordionContent>
-        </AccordionItem>
+          {/* Camarilla Pivots */}
+          <AccordionItem
+            value="camarilla-pivots"
+            className="border p-2 rounded-md"
+          >
+            <AccordionTrigger className="py-2 hover:no-underline">
+              <div className="flex w-full justify-between items-center">
+                <span className="font-medium">Camarilla Pivots</span>
+                <div className="flex items-center">
+                  {pivotType === PivotType.CAMARILLA && (
+                    <Badge className="mr-2 bg-primary">Active</Badge>
+                  )}
+                </div>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="pt-2">
+              {pivotData.camarilla ? (
+                <div className="space-y-2">
+                  {CAMARILLA_PIVOT_LEVELS.map((level) => {
+                    const price = pivotData.camarilla?.[level.key];
+                    if (price === undefined) return null;
 
-        {/* CPR Pivots */}
-        <AccordionItem value="cpr-pivots">
-          <AccordionTrigger className="text-sm font-medium">
-            Central Pivot Range (CPR)
-          </AccordionTrigger>
-          <AccordionContent>
-            <div className="space-y-2 py-2">
-              {CPR_PIVOT_LEVELS.map((level) => {
-                const price = pivotData.cpr?.[level.key];
-                if (price === undefined) return null;
+                    const marketInfo = getMarketInfo();
+                    const latestClose = marketInfo?.latestClose || 0;
+                    const isAbove = price > latestClose;
 
-                return (
-                  <div
-                    key={level.key}
-                    className="flex justify-between items-center"
-                  >
-                    <span>{level.label}</span>
-                    <span className="font-medium">{price.toFixed(2)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </AccordionContent>
-        </AccordionItem>
+                    return (
+                      <div
+                        key={level.key}
+                        className="flex justify-between items-center"
+                      >
+                        <span className="font-medium">{level.label}</span>
+                        <div className="flex flex-col items-end">
+                          <span
+                            className={`font-bold ${
+                              isAbove ? "text-green-500" : "text-red-500"
+                            }`}
+                          >
+                            {price.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {isAbove ? "↑" : "↓"}{" "}
+                            {(
+                              ((price - latestClose) / latestClose) *
+                              100
+                            ).toFixed(2)}
+                            %
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
 
-        {/* Fibonacci Extensions */}
-        <AccordionItem value="fib-extensions">
-          <AccordionTrigger className="text-sm font-medium">
-            Fibonacci Extensions
-          </AccordionTrigger>
-          <AccordionContent>
-            <div className="space-y-2 py-2">
-              {FIBONACCI_EXTENSION_LEVELS.map((level) => {
-                const price = pivotData.fibExtensions?.[level.key];
-                if (price === undefined) return null;
+                  {/* Button to set this as active */}
+                  {pivotType !== PivotType.CAMARILLA && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full mt-2"
+                      onClick={() => setPivotType(PivotType.CAMARILLA)}
+                    >
+                      Set as Active
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No Camarilla pivot data available
+                </div>
+              )}
+            </AccordionContent>
+          </AccordionItem>
 
-                return (
-                  <div
-                    key={level.key}
-                    className="flex justify-between items-center"
-                  >
-                    <span>{level.label}</span>
-                    <span className="font-medium">{price.toFixed(2)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </AccordionContent>
-        </AccordionItem>
+          {/* Woodie Pivots */}
+          <AccordionItem
+            value="woodie-pivots"
+            className="border p-2 rounded-md"
+          >
+            <AccordionTrigger className="py-2 hover:no-underline">
+              <div className="flex w-full justify-between items-center">
+                <span className="font-medium">Woodie Pivots</span>
+                <div className="flex items-center">
+                  {pivotType === PivotType.WOODIE && (
+                    <Badge className="mr-2 bg-primary">Active</Badge>
+                  )}
+                </div>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="pt-2">
+              {pivotData.woodie ? (
+                <div className="space-y-2">
+                  {WOODIE_PIVOT_LEVELS.map((level) => {
+                    const price = pivotData.woodie?.[level.key];
+                    if (price === undefined) return null;
 
-        {/* Fibonacci Retracements */}
-        <AccordionItem value="fib-retracements">
-          <AccordionTrigger className="text-sm font-medium">
-            Fibonacci Retracements
-          </AccordionTrigger>
-          <AccordionContent>
-            <div className="space-y-2 py-2">
-              {FIBONACCI_RETRACEMENT_LEVELS.map((level) => {
-                const price = pivotData.fibRetracements?.[level.key];
-                if (price === undefined) return null;
+                    const marketInfo = getMarketInfo();
+                    const latestClose = marketInfo?.latestClose || 0;
+                    const isAbove = price > latestClose;
 
-                return (
-                  <div
-                    key={level.key}
-                    className="flex justify-between items-center"
-                  >
-                    <span>{level.label}</span>
+                    return (
+                      <div
+                        key={level.key}
+                        className="flex justify-between items-center"
+                      >
+                        <span className="font-medium">{level.label}</span>
+                        <div className="flex flex-col items-end">
+                          <span
+                            className={`font-bold ${
+                              isAbove ? "text-green-500" : "text-red-500"
+                            }`}
+                          >
+                            {price.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {isAbove ? "↑" : "↓"}{" "}
+                            {(
+                              ((price - latestClose) / latestClose) *
+                              100
+                            ).toFixed(2)}
+                            %
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
 
-                    <span className="font-medium">{price.toFixed(2)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-      </Accordion>
+                  {/* Button to set this as active */}
+                  {pivotType !== PivotType.WOODIE && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full mt-2"
+                      onClick={() => setPivotType(PivotType.WOODIE)}
+                    >
+                      Set as Active
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No Woodie pivot data available
+                </div>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+
+          {/* DeMark Pivots */}
+          <AccordionItem
+            value="demark-pivots"
+            className="border p-2 rounded-md"
+          >
+            <AccordionTrigger className="py-2 hover:no-underline">
+              <div className="flex w-full justify-between items-center">
+                <span className="font-medium">DeMark Pivots</span>
+                <div className="flex items-center">
+                  {pivotType === PivotType.DEMARK && (
+                    <Badge className="mr-2 bg-primary">Active</Badge>
+                  )}
+                </div>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="pt-2">
+              {pivotData.demark ? (
+                <div className="space-y-2">
+                  {DEMARK_PIVOT_LEVELS.map((level) => {
+                    const price = pivotData.demark?.[level.key];
+                    if (price === undefined) return null;
+
+                    const marketInfo = getMarketInfo();
+                    const latestClose = marketInfo?.latestClose || 0;
+                    const isAbove = price > latestClose;
+
+                    return (
+                      <div
+                        key={level.key}
+                        className="flex justify-between items-center"
+                      >
+                        <span className="font-medium">{level.label}</span>
+                        <div className="flex flex-col items-end">
+                          <span
+                            className={`font-bold ${
+                              isAbove ? "text-green-500" : "text-red-500"
+                            }`}
+                          >
+                            {price.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {isAbove ? "↑" : "↓"}{" "}
+                            {(
+                              ((price - latestClose) / latestClose) *
+                              100
+                            ).toFixed(2)}
+                            %
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Button to set this as active */}
+                  {pivotType !== PivotType.DEMARK && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full mt-2"
+                      onClick={() => setPivotType(PivotType.DEMARK)}
+                    >
+                      Set as Active
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No DeMark pivot data available
+                </div>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+
+          {/* CPR Pivots */}
+          <AccordionItem value="cpr-pivots" className="border p-2 rounded-md">
+            <AccordionTrigger className="py-2 hover:no-underline">
+              <div className="flex w-full justify-between items-center">
+                <span className="font-medium">CPR Pivots</span>
+                <div className="flex items-center">
+                  {pivotType === PivotType.CPR && (
+                    <Badge className="mr-2 bg-primary">Active</Badge>
+                  )}
+                </div>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="pt-2">
+              {pivotData.cpr ? (
+                <div className="space-y-2">
+                  {CPR_PIVOT_LEVELS.map((level) => {
+                    const price = pivotData.cpr?.[level.key];
+                    if (price === undefined) return null;
+
+                    const marketInfo = getMarketInfo();
+                    const latestClose = marketInfo?.latestClose || 0;
+                    const isAbove = price > latestClose;
+
+                    return (
+                      <div
+                        key={level.key}
+                        className="flex justify-between items-center"
+                      >
+                        <span className="font-medium">{level.label}</span>
+                        <div className="flex flex-col items-end">
+                          <span
+                            className={`font-bold ${
+                              isAbove ? "text-green-500" : "text-red-500"
+                            }`}
+                          >
+                            {price.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {isAbove ? "↑" : "↓"}{" "}
+                            {(
+                              ((price - latestClose) / latestClose) *
+                              100
+                            ).toFixed(2)}
+                            %
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Button to set this as active */}
+                  {pivotType !== PivotType.CPR && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full mt-2"
+                      onClick={() => setPivotType(PivotType.CPR)}
+                    >
+                      Set as Active
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No CPR pivot data available
+                </div>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+
+          {/* Fibonacci Extensions */}
+          <AccordionItem
+            value="fib-extensions"
+            className="border p-2 rounded-md"
+          >
+            <AccordionTrigger className="py-2 hover:no-underline">
+              <div className="flex w-full justify-between items-center">
+                <span className="font-medium">Fibonacci Extensions</span>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="pt-2">
+              {pivotData.fibExtensions ? (
+                <div className="space-y-2">
+                  {FIBONACCI_EXTENSION_LEVELS.map((level) => {
+                    const price = pivotData.fibExtensions?.[level.key];
+                    if (price === undefined) return null;
+
+                    const marketInfo = getMarketInfo();
+                    const latestClose = marketInfo?.latestClose || 0;
+                    const isAbove = price > latestClose;
+
+                    return (
+                      <div
+                        key={level.key}
+                        className="flex justify-between items-center"
+                      >
+                        <span className="font-medium">{level.label}</span>
+                        <div className="flex flex-col items-end">
+                          <span
+                            className={`font-bold ${
+                              isAbove ? "text-green-500" : "text-red-500"
+                            }`}
+                          >
+                            {price.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {isAbove ? "↑" : "↓"}{" "}
+                            {(
+                              ((price - latestClose) / latestClose) *
+                              100
+                            ).toFixed(2)}
+                            %
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No Fibonacci extension data available
+                </div>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+
+          {/* Fibonacci Retracements */}
+          <AccordionItem
+            value="fib-retracements"
+            className="border p-2 rounded-md"
+          >
+            <AccordionTrigger className="py-2 hover:no-underline">
+              <div className="flex w-full justify-between items-center">
+                <span className="font-medium">Fibonacci Retracements</span>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="pt-2">
+              {pivotData.fibRetracements ? (
+                <div className="space-y-2">
+                  {FIBONACCI_RETRACEMENT_LEVELS.map((level) => {
+                    const price = pivotData.fibRetracements?.[level.key];
+                    if (price === undefined) return null;
+
+                    const marketInfo = getMarketInfo();
+                    const latestClose = marketInfo?.latestClose || 0;
+                    const isAbove = price > latestClose;
+
+                    return (
+                      <div
+                        key={level.key}
+                        className="flex justify-between items-center"
+                      >
+                        <span className="font-medium">{level.label}</span>
+                        <div className="flex flex-col items-end">
+                          <span
+                            className={`font-bold ${
+                              isAbove ? "text-green-500" : "text-red-500"
+                            }`}
+                          >
+                            {price.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {isAbove ? "↑" : "↓"}{" "}
+                            {(
+                              ((price - latestClose) / latestClose) *
+                              100
+                            ).toFixed(2)}
+                            %
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No Fibonacci retracement data available
+                </div>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      </div>
     );
   };
 

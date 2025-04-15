@@ -140,7 +140,7 @@ export const INTERVALS = [
 
 
 // Technical indicators constants
-export const API_TOKEN = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIzS0NIRUYiLCJqdGkiOiI2N2Y1ZWFjYTVhYTY1OTI2ZWU5NDdiYWQiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaWF0IjoxNzQ0MTY5Njc0LCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE3NDQyMzYwMDB9.J_3w9rtTr7y697B-vkK-pcGlg_JZaX6m59srO0QvYI0";
+export const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || "";
 
 // API base URL
 export const API_BASE_URL = "https://api.upstox.com/v2";

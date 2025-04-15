@@ -91,7 +91,9 @@ export default function TradingView(): JSX.Element {
       const formattedFromDate = format(oneYearAgo, "yyyy-MM-dd");
 
       const response = await fetch(
-        `https://api.upstox.com/v2/historical-candle/${instrument}/day/${formattedToDate}/${formattedFromDate}`
+        `/api/historical-data?instrument=${encodeURIComponent(
+          instrument
+        )}&interval=day&to_date=${formattedToDate}&from_date=${formattedFromDate}`
       );
 
       if (!response.ok) {

@@ -739,9 +739,65 @@ export function calculateFibonacciRetracements(
 }
 
 /**
- * Get Pivot Points for a specific candle
- * Calculates various types of pivot points based on the previous candle data
- * 
+ * Find the most recent trading day's candle data
+ * This function handles market holidays by searching backward until it finds valid data
+ * @param candles Array of OHLC data sorted by time (oldest to newest)
+ * @param currentIndex Index of the "current" candle
+ * @returns The most recent valid trading day's candle or null if not found
+ */
+export function findMostRecentTradingDay(
+  candles: OHLCData[],
+  currentIndex: number = candles.length - 1
+): OHLCData | null {
+  if (candles.length === 0 || currentIndex < 1) {
+    return null;
+  }
+
+  // Look back a maximum of 10 days to find a valid trading day
+  const maxLookback = 10;
+  let lookback = 1;
+
+  // Expected date would be exactly 1 day back (typical case)
+  const expectedPreviousDay = currentIndex - 1;
+  const expectedDate = candles[expectedPreviousDay]?.timestamp 
+    ? new Date(candles[expectedPreviousDay].timestamp) 
+    : null;
+
+  while (lookback <= maxLookback && currentIndex - lookback >= 0) {
+    const previousCandle = candles[currentIndex - lookback];
+    
+    // A valid trading day candle should have reasonable OHLC values
+    // Checking for zeroes or very small values that might indicate a holiday or non-trading day
+    if (
+      previousCandle &&
+      previousCandle.high > 0 &&
+      previousCandle.low > 0 &&
+      previousCandle.open > 0 &&
+      previousCandle.close > 0 &&
+      // Additional check: high should be greater than or equal to low (sanity check)
+      previousCandle.high >= previousCandle.low
+    ) {
+      // Log when we had to look back further than 1 day (indicating holiday handling)
+      if (lookback > 1) {
+        const actualDate = new Date(previousCandle.timestamp);
+        console.log(
+          `Market holiday detected: Using trading data from ${actualDate.toLocaleDateString()} instead of ${expectedDate?.toLocaleDateString() || 'expected date'}`
+        );
+      }
+      
+      return previousCandle;
+    }
+    
+    lookback++;
+  }
+  
+  // If we exhausted our lookback and still didn't find a valid candle
+  console.warn(`Could not find valid trading data in the last ${maxLookback} days`);
+  return null;
+}
+
+/**
+ * Get pivot points for a specific candle using the previous period's data
  * @param candles Array of OHLC data sorted by time (oldest to newest)
  * @param pivotType Type of pivot points to calculate
  * @param index Index of the candle to calculate pivots for (uses previous candle's data)
@@ -757,12 +813,19 @@ export function getPivotPoints(
     return null;
   }
 
-  // Previous candle data (for pivot calculation)
-  const prevCandle = candles[index - 1];
-  const prevHigh = prevCandle.high;
-  const prevLow = prevCandle.low;
-  const prevClose = prevCandle.close;
-  const prevOpen = prevCandle.open;
+  // Get the most recent valid trading day's data
+  const tradingDayCandle = findMostRecentTradingDay(candles, index);
+  
+  if (!tradingDayCandle) {
+    console.warn("Could not find a recent valid trading day's data for pivot calculation");
+    return null;
+  }
+  
+  // Previous candle data for pivot calculation (using the most recent trading day)
+  const prevHigh = tradingDayCandle.high;
+  const prevLow = tradingDayCandle.low;
+  const prevClose = tradingDayCandle.close;
+  const prevOpen = tradingDayCandle.open;
   
   // Current candle data (needed for some pivot types)
   const currentCandle = candles[index];
@@ -839,9 +902,17 @@ export function isUptrend(candles: OHLCData[], lookbackPeriod: number = 10): boo
 export function getAllPivotPoints(candles: OHLCData[]) {
   if (candles.length < 2) return null;
   
+  // Find the most recent valid trading day's data
+  const tradingDayCandle = findMostRecentTradingDay(candles);
+  if (!tradingDayCandle) {
+    console.error("Could not find recent valid trading day for pivot calculations");
+    return null;
+  }
+  
   const { swingHigh, swingLow } = findSwingHighLow(candles);
   const uptrend = isUptrend(candles);
   
+  // Include the actual trading day date used for pivot calculations
   return {
     standard: getPivotPoints(candles, PivotType.STANDARD),
     fibonacci: getPivotPoints(candles, PivotType.FIBONACCI),
@@ -850,6 +921,7 @@ export function getAllPivotPoints(candles: OHLCData[]) {
     demark: getPivotPoints(candles, PivotType.DEMARK),
     cpr: getPivotPoints(candles, PivotType.CPR),
     fibExtensions: calculateFibonacciExtensions(swingHigh, swingLow, uptrend),
-    fibRetracements: calculateFibonacciRetracements(swingHigh, swingLow, uptrend)
+    fibRetracements: calculateFibonacciRetracements(swingHigh, swingLow, uptrend),
+    tradingDate: tradingDayCandle.timestamp // Include the date of the candle used for calculations
   };
 }

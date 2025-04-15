@@ -38,6 +38,7 @@ interface StatsData {
   highest: number;
   lowest: number;
   previousClose?: number;
+  date?: string;
 }
 
 export default function TimeframeCard({
@@ -76,11 +77,17 @@ export default function TimeframeCard({
     if (timeframe !== "currentDay") return false;
 
     // Make sure we're connected AND have data for this instrument
-    return (
-      isConnected &&
-      marketData[instrument] &&
-      marketData[instrument].dailyOHLC !== undefined
-    );
+    // First check if we have a direct WebSocket connection
+    if (isConnected && marketData[instrument] && marketData[instrument].ff) {
+      return true;
+    }
+
+    // Then check if we have OHLC data through the WebSocket
+    if (isConnected && marketData[instrument]?.dailyOHLC) {
+      return true;
+    }
+
+    return false;
   };
 
   const getDateRangeForTimeframe = (): { fromDate: Date; toDate: Date } => {
@@ -174,19 +181,17 @@ export default function TimeframeCard({
       return previousTimeframeData.closing;
     }
 
-    // For previousDay timeframe, we need to fetch data from 2 days ago
+    // For previousDay timeframe, we need to fetch data from the most recent trading day
     if (timeframe === "previousDay") {
-      const twoDaysAgo = subDays(new Date(), 1);
-      const formattedDate = format(twoDaysAgo, "yyyy-MM-dd");
-
       try {
+        // Use our new API endpoint to find the last trading day with data
         const response = await fetch(
-          `https://api.upstox.com/v2/historical-candle/${instrument}/day/${formattedDate}/${formattedDate}`
+          `/api/last-trading-day?instrument=${encodeURIComponent(instrument)}`
         );
 
         if (!response.ok) return null;
 
-        const result: APIResponse = await response.json();
+        const result = await response.json();
 
         if (
           result.status === "success" &&
@@ -194,7 +199,7 @@ export default function TimeframeCard({
           result.data.candles.length > 0
         ) {
           const candles = result.data.candles.map(transformCandle);
-          console.log("Previous day's candles:", candles);
+          console.log("Previous trading day's candles:", candles);
           return candles[0].close;
         }
       } catch (err) {
@@ -214,25 +219,120 @@ export default function TimeframeCard({
 
     // Check if we should use real-time data
     if (useRealTimeData()) {
-      const realTimeData = marketData[instrument];
-      const dailyOHLC = realTimeData.dailyOHLC;
+      try {
+        // Try to get daily OHLC data from the WebSocket
+        if (marketData[instrument]?.dailyOHLC) {
+          const dailyOHLC = marketData[instrument].dailyOHLC;
 
-      const newData = {
-        opening: parseFloat(dailyOHLC.open),
-        closing: parseFloat(dailyOHLC.close),
-        highest: parseFloat(dailyOHLC.high),
-        lowest: parseFloat(dailyOHLC.low),
-        previousClose: previousClose || undefined,
-      };
+          const newData = {
+            opening: parseFloat(dailyOHLC.open),
+            closing: parseFloat(dailyOHLC.close),
+            highest: parseFloat(dailyOHLC.high),
+            lowest: parseFloat(dailyOHLC.low),
+            previousClose: previousClose || undefined,
+          };
 
-      setData(newData);
-      setIsLoading(false);
+          setData(newData);
+          setIsLoading(false);
 
-      // Notify parent component about loaded data
-      if (onDataLoaded) onDataLoaded(newData);
+          // Notify parent component about loaded data
+          if (onDataLoaded) onDataLoaded(newData);
+          return;
+        }
+
+        // If we don't have daily OHLC from WebSocket, try to get today's data via API
+        // This is a fallback for when the WebSocket has connected but doesn't have OHLC data yet
+        const today = new Date();
+        const formattedDate = format(today, "yyyy-MM-dd");
+
+        const response = await fetch(
+          `/api/historical-data?instrument=${encodeURIComponent(
+            instrument
+          )}&interval=${interval}&to_date=${formattedDate}&from_date=${formattedDate}`
+        );
+
+        if (response.ok) {
+          const result = await response.json();
+
+          if (
+            result.status === "success" &&
+            result.data.candles &&
+            result.data.candles.length > 0
+          ) {
+            const candles = result.data.candles.map(transformCandle);
+
+            const newData = {
+              opening: candles[0].open,
+              closing: candles[0].close,
+              highest: candles[0].high,
+              lowest: candles[0].low,
+              previousClose: previousClose || undefined,
+            };
+
+            setData(newData);
+            setIsLoading(false);
+
+            if (onDataLoaded) onDataLoaded(newData);
+            return;
+          }
+        }
+
+        // If we couldn't get today's data via API either, continue to regular flow
+      } catch (err) {
+        console.error("Error fetching real-time data:", err);
+        // Continue to regular flow if real-time fails
+      }
+    }
+
+    // For the "previousDay" timeframe, use the last-trading-day endpoint
+    if (timeframe === "previousDay") {
+      try {
+        const response = await fetch(
+          `/api/last-trading-day?instrument=${encodeURIComponent(instrument)}`
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (
+          result.status === "success" &&
+          result.data.candles &&
+          result.data.candles.length > 0
+        ) {
+          const candles = result.data.candles.map(transformCandle);
+
+          // Calculate OHLC data
+          const newData = {
+            opening: candles[0].open,
+            closing: candles[0].close,
+            highest: candles[0].high,
+            lowest: candles[0].low,
+            previousClose: previousClose || undefined,
+            // Add the date we found to display in the UI
+            date: result.lastTradingDate,
+          };
+
+          setData(newData);
+
+          // Notify parent component about loaded data
+          if (onDataLoaded) onDataLoaded(newData);
+        } else {
+          setError("No data available for previous trading day");
+        }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        setError(`Error: ${errorMessage}`);
+        console.error(`Error fetching ${timeframe} data:`, err);
+      } finally {
+        setIsLoading(false);
+      }
       return;
     }
 
+    // For other timeframes, use the original logic
     const { fromDate, toDate } = getDateRangeForTimeframe();
 
     // The API expects dates in format: to_date/from_date
@@ -241,7 +341,9 @@ export default function TimeframeCard({
 
     try {
       const response = await fetch(
-        `https://api.upstox.com/v2/historical-candle/${instrument}/${interval}/${formattedToDate}/${formattedFromDate}`
+        `/api/historical-data?instrument=${encodeURIComponent(
+          instrument
+        )}&interval=${interval}&to_date=${formattedToDate}&from_date=${formattedFromDate}`
       );
 
       if (!response.ok) {
@@ -440,7 +542,14 @@ export default function TimeframeCard({
   return (
     <Card className="col-span-1">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        <CardTitle className="text-sm font-medium">
+          {title}
+          {timeframe === "previousDay" && data.date && (
+            <span className="block text-xs text-gray-500 font-normal">
+              {new Date(data.date).toLocaleDateString()}
+            </span>
+          )}
+        </CardTitle>
         <div className="flex items-center space-x-2">
           {timeframe === "currentDay" &&
             isConnected &&

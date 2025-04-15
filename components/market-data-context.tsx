@@ -4,7 +4,7 @@ import React, { createContext, useContext, useState, useEffect } from "react";
 import protobuf from "protobufjs";
 import { Buffer } from "buffer";
 import { MarketDataContextType } from "@/app/types";
-import { API_TOKEN, WS_AUTH_ENDPOINT } from "@/app/constants";
+import { WS_AUTH_ENDPOINT } from "@/app/constants";
 import { arrayBufferToBuffer, blobToArrayBuffer } from "@/lib/utils";
 
 // Create the context with default values
@@ -45,16 +45,8 @@ export function MarketDataProvider({
 
   // Function to get WebSocket URL
   const getWebSocketUrl = async (): Promise<string> => {
-    const headers = {
-      "Content-type": "application/json",
-      Authorization: "Bearer " + API_TOKEN,
-    };
-
     try {
-      const response = await fetch(WS_AUTH_ENDPOINT, {
-        method: "GET",
-        headers: headers,
-      });
+      const response = await fetch(`/api/ws-auth`);
 
       if (!response.ok) {
         throw new Error(`HTTP error! Status: ${response.status}`);
@@ -84,20 +76,48 @@ export function MarketDataProvider({
           socket.close();
         }
 
+        console.log("Fetching WebSocket URL...");
         // Get WebSocket URL
         const wsUrl = await getWebSocketUrl();
+        console.log("WebSocket URL obtained:", wsUrl);
+
         ws = new WebSocket(wsUrl);
+        console.log("WebSocket connecting...");
 
         ws.onopen = () => {
           setIsConnected(true);
           setSocket(ws);
           console.log("WebSocket connected successfully");
+
+          // Auto-subscribe to some default instruments when connected
+          if (ws) {
+            const defaultInstruments = [
+              "NSE_INDEX|Nifty 50",
+              "NSE_INDEX|Nifty Bank",
+            ];
+            const subscriptionData = {
+              guid: "trading-view-app-default",
+              method: "sub",
+              data: {
+                mode: "full",
+                instrumentKeys: defaultInstruments,
+              },
+            };
+
+            console.log(
+              "Auto-subscribing to default instruments:",
+              defaultInstruments
+            );
+            ws.send(Buffer.from(JSON.stringify(subscriptionData)));
+          }
         };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
+          console.log(
+            `WebSocket closed with code: ${event.code}, reason: ${event.reason}`
+          );
           setIsConnected(false);
           setSocket(null);
-          console.log("WebSocket disconnected");
         };
 
         ws.onmessage = async (event) => {
@@ -112,18 +132,45 @@ export function MarketDataProvider({
 
             const response = FeedResponse.decode(buffer);
 
+            // Log the first message to see its structure
+            if (!isConnected) {
+              console.log(
+                "First WebSocket message received:",
+                JSON.stringify(response).substring(0, 200) + "..."
+              );
+            }
+
             // Process and update market data
             if (response && response.feeds) {
               // In this case, feeds is an object with instrument keys
               const feeds = response.feeds;
 
+              // Log what instruments we received data for
+              const instrumentKeys = Object.keys(feeds);
+              if (instrumentKeys.length > 0) {
+                console.log("Received data for instruments:", instrumentKeys);
+              }
+
               // Iterate through each instrument in the feeds object
-              Object.keys(feeds).forEach((instrumentKey) => {
+              instrumentKeys.forEach((instrumentKey) => {
                 const feed = feeds[instrumentKey];
 
-                // Check if we have the indexFF data structure
+                // Check for different types of feed structures
                 if (feed.ff && feed.ff.indexFF) {
+                  // Handle index feed format
                   const indexFF = feed.ff.indexFF;
+
+                  // Log the first time we receive OHLC data
+                  if (
+                    indexFF.marketOHLC &&
+                    indexFF.marketOHLC.ohlc &&
+                    indexFF.marketOHLC.ohlc.length > 0 &&
+                    !marketData[instrumentKey]?.dailyOHLC
+                  ) {
+                    console.log(
+                      `Received first OHLC data for ${instrumentKey}`
+                    );
+                  }
 
                   // Check if we have marketOHLC data
                   if (
@@ -141,8 +188,10 @@ export function MarketDataProvider({
                       setMarketData((prev) => ({
                         ...prev,
                         [instrumentKey]: {
+                          ...prev[instrumentKey],
                           ohlc: indexFF.marketOHLC.ohlc,
                           dailyOHLC: dailyOHLC,
+                          ff: feed.ff,
                           lastPrice: indexFF.ltpc
                             ? parseFloat(indexFF.ltpc.ltp)
                             : 0,
@@ -150,7 +199,31 @@ export function MarketDataProvider({
                         },
                       }));
                     }
+                  } else if (indexFF.ltpc) {
+                    // If we don't have OHLC but have last traded price/close
+                    setMarketData((prev) => ({
+                      ...prev,
+                      [instrumentKey]: {
+                        ...prev[instrumentKey],
+                        ff: feed.ff,
+                        lastPrice: parseFloat(indexFF.ltpc.ltp),
+                        lastUpdated: new Date().toISOString(),
+                      },
+                    }));
                   }
+                } else if (feed.marketFF) {
+                  // Handle market feed format (different structure)
+                  setMarketData((prev) => ({
+                    ...prev,
+                    [instrumentKey]: {
+                      ...prev[instrumentKey],
+                      ff: feed,
+                      lastPrice: feed.marketFF.ltpc
+                        ? parseFloat(feed.marketFF.ltpc.ltp)
+                        : 0,
+                      lastUpdated: new Date().toISOString(),
+                    },
+                  }));
                 }
               });
             }
