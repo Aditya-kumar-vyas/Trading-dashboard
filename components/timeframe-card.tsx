@@ -57,36 +57,124 @@ export default function TimeframeCard({
   const [realTimePrice, setRealTimePrice] = useState<number | null>(null);
   const { isConnected, marketData } = useMarketData();
 
-  // Get current real-time price from WebSocket data
-  const getCurrentRealTimePrice = () => {
-    if (!isConnected || !marketData[instrument]) return null;
-
-    try {
-      // Extract last traded price from the WebSocket data
-      const ltp = marketData[instrument]?.ff?.marketFF?.ltpc?.ltp;
-      return typeof ltp === "number" ? ltp : null;
-    } catch (err) {
-      console.error("Error extracting real-time price:", err);
-      return null;
+  // Add effect to update real-time price
+  useEffect(() => {
+    // Only update real-time price for current day timeframe when connected
+    if (timeframe !== "currentDay" || !isConnected) {
+      setRealTimePrice(null);
+      return;
     }
-  };
+
+    const handlePriceUpdate = () => {
+      // Skip if no market data for this instrument
+      if (!marketData[instrument]) return;
+
+      // Try to get latest price from various formats
+      let price = null;
+      let source = "";
+
+      // First try the feedData format - indexFF for index feeds
+      if (marketData[instrument]?.ff?.indexFF?.ltpc?.ltp) {
+        price = parseFloat(marketData[instrument].ff.indexFF.ltpc.ltp);
+        source = "indexFF.ltpc.ltp";
+      }
+      // Try marketFF for stock feeds
+      else if (marketData[instrument]?.ff?.marketFF?.ltpc?.ltp) {
+        price = parseFloat(marketData[instrument].ff.marketFF.ltpc.ltp);
+        source = "marketFF.ltpc.ltp";
+      }
+      // Generic ff.ltp for any feed type
+      else if (marketData[instrument]?.ff?.ltp) {
+        price = parseFloat(marketData[instrument].ff.ltp);
+        source = "ff.ltp";
+      }
+      // Then try lastPrice if available
+      else if (marketData[instrument]?.lastPrice) {
+        price = parseFloat(marketData[instrument].lastPrice);
+        source = "lastPrice";
+      }
+      // Then try the dailyOHLC format
+      else if (marketData[instrument]?.dailyOHLC?.close) {
+        price = parseFloat(marketData[instrument].dailyOHLC.close);
+        source = "dailyOHLC.close";
+      }
+
+      if (price !== null && !isNaN(price)) {
+        // Only log when the price changes or it's the first update
+        if (realTimePrice === null || price !== realTimePrice) {
+          console.log(
+            `Real-time price updated for ${instrument}: ${price} (source: ${source})`
+          );
+          setRealTimePrice(price);
+        }
+      } else if (timeframe === "currentDay" && title === "Today") {
+        // Log debugging info for today's card when we can't find a price
+        console.log(
+          `Could not find real-time price for ${instrument}. Available data:`,
+          JSON.stringify(marketData[instrument]).substring(0, 200) + "..."
+        );
+      }
+    };
+
+    // Initial update
+    handlePriceUpdate();
+
+    // Set up interval to update price every second
+    const interval = setInterval(handlePriceUpdate, 1000);
+
+    // Clean up interval on unmount or when deps change
+    return () => clearInterval(interval);
+  }, [timeframe, isConnected, marketData, instrument, title, realTimePrice]);
 
   // Check if we should use real-time data for this timeframe
   const useRealTimeData = (): boolean => {
     // Only attempt to use real-time data for current day timeframe
     if (timeframe !== "currentDay") return false;
 
-    // Make sure we're connected AND have data for this instrument
-    // First check if we have a direct WebSocket connection
-    if (isConnected && marketData[instrument] && marketData[instrument].ff) {
+    // Only use real-time data if we're connected
+    if (!isConnected) return false;
+
+    // Check if we have data for this instrument
+    if (!marketData[instrument]) {
+      console.log(`No market data for ${instrument}`);
+      return false;
+    }
+
+    // Debug log all available data formats
+    console.log(
+      `Available data for ${instrument}:`,
+      Object.keys(marketData[instrument]).filter((key) => key !== "lastUpdated")
+    );
+
+    // Try to find any available data for this instrument
+    // Check all possible data formats in order of preference
+    if (marketData[instrument]?.ff?.indexFF?.ltpc?.ltp) {
+      console.log(`Found real-time indexFF.ltpc.ltp data for ${instrument}`);
       return true;
     }
 
-    // Then check if we have OHLC data through the WebSocket
-    if (isConnected && marketData[instrument]?.dailyOHLC) {
+    if (marketData[instrument]?.ff?.marketFF?.ltpc?.ltp) {
+      console.log(`Found real-time marketFF.ltpc.ltp data for ${instrument}`);
       return true;
     }
 
+    if (marketData[instrument]?.ff?.ltp) {
+      console.log(`Found real-time ff.ltp data for ${instrument}`);
+      return true;
+    }
+
+    if (marketData[instrument]?.lastPrice) {
+      console.log(`Found real-time lastPrice data for ${instrument}`);
+      return true;
+    }
+
+    if (marketData[instrument]?.dailyOHLC) {
+      console.log(`Found real-time dailyOHLC data for ${instrument}`);
+      return true;
+    }
+
+    // No data found for this instrument
+    console.log(`No real-time data found for ${instrument}`);
     return false;
   };
 
@@ -214,44 +302,84 @@ export default function TimeframeCard({
     setIsLoading(true);
     setError(null);
 
-    // Get previous day's close for correct change calculation
-    const previousClose = await fetchPreviousDayClose();
+    try {
+      // Get previous day's close for correct change calculation
+      const previousClose = await fetchPreviousDayClose();
 
-    // Check if we should use real-time data
-    if (useRealTimeData()) {
-      try {
-        // Try to get daily OHLC data from the WebSocket
-        if (marketData[instrument]?.dailyOHLC) {
-          const dailyOHLC = marketData[instrument].dailyOHLC;
+      // Check if we should use real-time data
+      if (useRealTimeData()) {
+        console.log(`Using real-time data for ${instrument}`);
+        try {
+          // First try to get data from the full feed (ff)
+          if (marketData[instrument]?.ff) {
+            const feedData = marketData[instrument].ff;
 
-          const newData = {
-            opening: parseFloat(dailyOHLC.open),
-            closing: parseFloat(dailyOHLC.close),
-            highest: parseFloat(dailyOHLC.high),
-            lowest: parseFloat(dailyOHLC.low),
-            previousClose: previousClose || undefined,
-          };
+            const newData: StatsData = {
+              opening: feedData.opr || 0,
+              closing: feedData.ltp || 0,
+              highest: feedData.high || 0,
+              lowest: feedData.low || 0,
+              previousClose: previousClose || undefined,
+            };
 
-          setData(newData);
-          setIsLoading(false);
+            setData(newData);
+            setIsLoading(false);
+            return;
+          }
 
-          // Notify parent component about loaded data
-          if (onDataLoaded) onDataLoaded(newData);
-          return;
+          // Then try to get dailyOHLC data
+          else if (marketData[instrument]?.dailyOHLC) {
+            const dailyOHLC = marketData[instrument].dailyOHLC;
+
+            const newData: StatsData = {
+              opening: parseFloat(dailyOHLC.open),
+              closing: parseFloat(dailyOHLC.close || dailyOHLC.ltp),
+              highest: parseFloat(dailyOHLC.high),
+              lowest: parseFloat(dailyOHLC.low),
+              previousClose: previousClose || undefined,
+            };
+
+            setData(newData);
+            setIsLoading(false);
+            return;
+          }
+
+          // If we have just LTP data
+          else if (marketData[instrument]?.ltp) {
+            const ltp = marketData[instrument].ltp;
+
+            // We might not have full OHLC data, but we at least have current price
+            const newData: StatsData = {
+              opening: previousClose || 0, // Use previous close as opening if we don't have it
+              closing: ltp,
+              highest: ltp, // Use current price as high if we don't have it
+              lowest: ltp, // Use current price as low if we don't have it
+              previousClose: previousClose || undefined,
+            };
+
+            setData(newData);
+            setIsLoading(false);
+            return;
+          }
+        } catch (error) {
+          console.error("Error processing real-time data:", error);
+          // Fall through to fetch historical data
         }
+      }
 
-        // If we don't have daily OHLC from WebSocket, try to get today's data via API
-        // This is a fallback for when the WebSocket has connected but doesn't have OHLC data yet
-        const today = new Date();
-        const formattedDate = format(today, "yyyy-MM-dd");
+      // If we reach here, either we don't have real-time data or there was an error processing it
+      // Fallback to historical API data
+      try {
+        // For the "previousDay" timeframe, use the last-trading-day endpoint
+        if (timeframe === "previousDay") {
+          const response = await fetch(
+            `/api/last-trading-day?instrument=${encodeURIComponent(instrument)}`
+          );
 
-        const response = await fetch(
-          `/api/historical-data?instrument=${encodeURIComponent(
-            instrument
-          )}&interval=${interval}&to_date=${formattedDate}&from_date=${formattedDate}`
-        );
+          if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+          }
 
-        if (response.ok) {
           const result = await response.json();
 
           if (
@@ -261,135 +389,91 @@ export default function TimeframeCard({
           ) {
             const candles = result.data.candles.map(transformCandle);
 
+            // Calculate OHLC data
             const newData = {
               opening: candles[0].open,
               closing: candles[0].close,
               highest: candles[0].high,
               lowest: candles[0].low,
               previousClose: previousClose || undefined,
+              // Add the date we found to display in the UI
+              date: result.lastTradingDate,
             };
 
             setData(newData);
-            setIsLoading(false);
 
+            // Notify parent component about loaded data
             if (onDataLoaded) onDataLoaded(newData);
-            return;
+            setIsLoading(false);
+          } else {
+            setError("No data available for previous trading day");
+            setIsLoading(false);
+          }
+        } else {
+          // For other timeframes, use the original logic
+          const { fromDate, toDate } = getDateRangeForTimeframe();
+
+          // The API expects dates in format: to_date/from_date
+          const formattedFromDate = format(fromDate, "yyyy-MM-dd");
+          const formattedToDate = format(toDate, "yyyy-MM-dd");
+
+          const response = await fetch(
+            `/api/historical-data?instrument=${encodeURIComponent(
+              instrument
+            )}&interval=${interval}&to_date=${formattedToDate}&from_date=${formattedFromDate}`
+          );
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+          }
+
+          const result: APIResponse = await response.json();
+
+          if (
+            result.status === "success" &&
+            result.data.candles &&
+            result.data.candles.length > 0
+          ) {
+            const candles = result.data.candles.map(transformCandle);
+
+            // Sort candles by timestamp in descending order (newest first)
+            candles.sort(
+              (a, b) =>
+                new Date(b.timestamp).getTime() -
+                new Date(a.timestamp).getTime()
+            );
+
+            // Calculate OHLC properly for the entire timeframe
+            const newData = {
+              // Opening price is the first candle's open (earliest date)
+              opening: candles[candles.length - 1].open,
+              // Closing price is the last candle's close (latest date)
+              closing: candles[0].close,
+              // Highest is max of all high prices in timeframe
+              highest: Math.max(...candles.map((d) => d.high)),
+              // Lowest is min of all low prices in timeframe
+              lowest: Math.min(...candles.map((d) => d.low)),
+              previousClose: previousClose || undefined,
+            };
+
+            setData(newData);
+
+            // Notify parent component about loaded data
+            if (onDataLoaded) onDataLoaded(newData);
+            setIsLoading(false);
+          } else {
+            setError("No data available for this timeframe");
+            setIsLoading(false);
           }
         }
-
-        // If we couldn't get today's data via API either, continue to regular flow
-      } catch (err) {
-        console.error("Error fetching real-time data:", err);
-        // Continue to regular flow if real-time fails
-      }
-    }
-
-    // For the "previousDay" timeframe, use the last-trading-day endpoint
-    if (timeframe === "previousDay") {
-      try {
-        const response = await fetch(
-          `/api/last-trading-day?instrument=${encodeURIComponent(instrument)}`
-        );
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! Status: ${response.status}`);
-        }
-
-        const result = await response.json();
-
-        if (
-          result.status === "success" &&
-          result.data.candles &&
-          result.data.candles.length > 0
-        ) {
-          const candles = result.data.candles.map(transformCandle);
-
-          // Calculate OHLC data
-          const newData = {
-            opening: candles[0].open,
-            closing: candles[0].close,
-            highest: candles[0].high,
-            lowest: candles[0].low,
-            previousClose: previousClose || undefined,
-            // Add the date we found to display in the UI
-            date: result.lastTradingDate,
-          };
-
-          setData(newData);
-
-          // Notify parent component about loaded data
-          if (onDataLoaded) onDataLoaded(newData);
-        } else {
-          setError("No data available for previous trading day");
-        }
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        setError(`Error: ${errorMessage}`);
-        console.error(`Error fetching ${timeframe} data:`, err);
-      } finally {
+      } catch (error) {
+        console.error(`Error fetching ${timeframe} data:`, error);
+        setError("Could not fetch market data. Please try again later.");
         setIsLoading(false);
       }
-      return;
-    }
-
-    // For other timeframes, use the original logic
-    const { fromDate, toDate } = getDateRangeForTimeframe();
-
-    // The API expects dates in format: to_date/from_date
-    const formattedFromDate = format(fromDate, "yyyy-MM-dd");
-    const formattedToDate = format(toDate, "yyyy-MM-dd");
-
-    try {
-      const response = await fetch(
-        `/api/historical-data?instrument=${encodeURIComponent(
-          instrument
-        )}&interval=${interval}&to_date=${formattedToDate}&from_date=${formattedFromDate}`
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
-
-      const result: APIResponse = await response.json();
-
-      if (
-        result.status === "success" &&
-        result.data.candles &&
-        result.data.candles.length > 0
-      ) {
-        const candles = result.data.candles.map(transformCandle);
-
-        // Sort candles by timestamp in descending order (newest first)
-        candles.sort(
-          (a, b) =>
-            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-        );
-
-        // Calculate OHLC properly for the entire timeframe
-        const newData = {
-          // Opening price is the first candle's open (earliest date)
-          opening: candles[candles.length - 1].open,
-          // Closing price is the last candle's close (latest date)
-          closing: candles[0].close,
-          // Highest is max of all high prices in timeframe
-          highest: Math.max(...candles.map((d) => d.high)),
-          // Lowest is min of all low prices in timeframe
-          lowest: Math.min(...candles.map((d) => d.low)),
-          previousClose: previousClose || undefined,
-        };
-
-        setData(newData);
-
-        // Notify parent component about loaded data
-        if (onDataLoaded) onDataLoaded(newData);
-      } else {
-        setError("No data available for this timeframe");
-      }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(`Error: ${errorMessage}`);
-      console.error(`Error fetching ${timeframe} data:`, err);
-    } finally {
+    } catch (error) {
+      console.error("Error in fetchData:", error);
+      setError("An unexpected error occurred. Please try again.");
       setIsLoading(false);
     }
   };
@@ -442,109 +526,154 @@ export default function TimeframeCard({
   // Update real-time price when WebSocket data changes
   useEffect(() => {
     if (isConnected && marketData[instrument]) {
-      const currentPrice = getCurrentRealTimePrice();
+      const currentPrice = realTimePrice;
       if (currentPrice !== null) {
         setRealTimePrice(currentPrice);
       }
     }
-  }, [marketData, isConnected, instrument]);
+  }, [marketData, isConnected, realTimePrice]);
 
   const handleRefresh = (): void => {
     fetchData();
     if (onRefresh) onRefresh();
   };
 
-  if (isLoading) {
-    return (
-      <Card className="col-span-1">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">{title}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-center py-4">
-            <RefreshCw className="h-6 w-6 animate-spin text-gray-400" />
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
+  // Calculate change data (with real-time updates)
+  const calculateChangeData = () => {
+    if (!data) return { changeValue: 0, changePercent: 0, isRealTime: false };
 
-  if (error || !data) {
-    return (
-      <Card className="col-span-1">
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-sm font-medium">{title}</CardTitle>
-          <Button variant="ghost" size="sm" onClick={handleRefresh}>
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-        </CardHeader>
-        <CardContent>
-          <div className="text-sm text-gray-500">
-            {error || "No data available"}
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
+    // Determine which price to use (real-time or closing)
+    const currentPrice =
+      timeframe === "currentDay" && realTimePrice !== null
+        ? realTimePrice
+        : data.closing;
 
-  // Determine if bullish (closing > opening) for candlestick color
-  const isBullish = data.closing > data.opening;
-  const priceColor = isBullish ? "text-green-600" : "text-red-600";
-  const bodyColor = isBullish ? "bg-green-500" : "bg-red-500";
+    const isRealTime = timeframe === "currentDay" && realTimePrice !== null;
 
-  // Calculate change compared to previous day/timeframe close
-  const previousClose = data.previousClose || 0;
-  const hasValidPreviousClose = previousClose > 0;
+    // For current day, use previous day's close as base price if available
+    const basePrice =
+      timeframe === "currentDay" && data.previousClose
+        ? data.previousClose
+        : data.opening;
 
-  // Day-to-day change calculation
-  const dayToDayChange = hasValidPreviousClose
-    ? data.closing - previousClose
-    : data.closing - data.opening; // Fallback to intraday change
+    const changeValue = currentPrice - basePrice;
+    const changePercent = (changeValue / basePrice) * 100;
 
-  const dayToDayPercentChange = hasValidPreviousClose
-    ? (dayToDayChange / previousClose) * 100
-    : ((data.closing - data.opening) / data.opening) * 100;
-
-  const dayToDayChangeColor =
-    dayToDayChange >= 0 ? "text-green-600" : "text-red-600";
-
-  // Calculate candlestick dimensions
-  const candleHeight = 80; // Total height for the candlestick
-  const maxPrice = Math.max(data.highest, data.opening, data.closing);
-  const minPrice = Math.min(data.lowest, data.opening, data.closing);
-  const priceRange = maxPrice - minPrice;
-
-  // Calculate positions for the candlestick parts (as percentages of total height)
-  const getPosition = (price: number) => {
-    if (priceRange === 0) return 50; // Default to middle if no range
-    return ((maxPrice - price) / priceRange) * candleHeight;
+    return {
+      changeValue,
+      changePercent,
+      isRealTime,
+    };
   };
 
-  const highPosition = getPosition(data.highest);
-  const lowPosition = getPosition(data.lowest);
-  const openPosition = getPosition(data.opening);
-  const closePosition = getPosition(data.closing);
+  // Render stock data
+  const renderStockData = () => {
+    if (isLoading) {
+      return <p className="text-center py-4">Loading...</p>;
+    }
 
-  // Calculate body start, end, and height
-  const bodyTop = isBullish ? closePosition : openPosition;
-  const bodyBottom = isBullish ? openPosition : closePosition;
-  const bodyHeight = Math.max(1, Math.abs(bodyBottom - bodyTop)); // Ensure minimum height of 1px
+    if (error) {
+      return <p className="text-center text-red-500 py-4">{error}</p>;
+    }
 
-  // Calculate wick dimensions
-  const upperWickHeight = bodyTop;
-  const lowerWickHeight = candleHeight - bodyBottom;
+    if (!data || !data.closing) {
+      return (
+        <p className="text-center text-gray-500 py-4">No data available</p>
+      );
+    }
 
-  // Current price position (if available)
-  const currentPricePosition = realTimePrice
-    ? getPosition(realTimePrice)
-    : null;
+    // Determine current price based on timeframe
+    const currentPrice =
+      timeframe === "currentDay" && realTimePrice !== null
+        ? realTimePrice
+        : data.closing;
+
+    // For current day, use previous day's close as base price if available
+    const basePrice =
+      timeframe === "currentDay" && data.previousClose
+        ? data.previousClose
+        : data.opening;
+
+    // Calculate change
+    const change = currentPrice - basePrice;
+    const percentChange = (change / basePrice) * 100;
+
+    // Format display values
+    const priceDisplay = currentPrice.toFixed(2);
+    const changeDisplay = change.toFixed(2);
+    const percentDisplay = percentChange.toFixed(2);
+
+    // Determine if change is positive, negative, or neutral
+    const isPositive = change > 0;
+    const isNegative = change < 0;
+
+    // CSS classes for positive/negative values
+    const changeColorClass = isPositive
+      ? "text-green-600"
+      : isNegative
+      ? "text-red-600"
+      : "text-gray-600";
+
+    return (
+      <div className="space-y-4">
+        {/* Main price and change */}
+        <div className="flex flex-col items-center">
+          <div className="flex items-center space-x-2">
+            <span className="text-2xl font-bold">{priceDisplay}</span>
+            {timeframe === "currentDay" && realTimePrice !== null && (
+              <Badge
+                variant="outline"
+                className="bg-green-100 text-green-800 text-xs animate-pulse"
+              >
+                LIVE
+              </Badge>
+            )}
+          </div>
+
+          <div className={`flex items-center ${changeColorClass}`}>
+            <span>
+              {isPositive ? "+" : ""}
+              {changeDisplay} ({isPositive ? "+" : ""}
+              {percentDisplay}%)
+            </span>
+          </div>
+        </div>
+
+        {/* OHLC Data Grid */}
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <div>
+            <div className="text-gray-500">Open</div>
+            <div>{data.opening.toFixed(2)}</div>
+          </div>
+          <div>
+            <div className="text-gray-500">Close</div>
+            <div>{data.closing.toFixed(2)}</div>
+          </div>
+          <div>
+            <div className="text-gray-500">High</div>
+            <div>{data.highest.toFixed(2)}</div>
+          </div>
+          <div>
+            <div className="text-gray-500">Low</div>
+            <div>{data.lowest.toFixed(2)}</div>
+          </div>
+          {data.previousClose && (
+            <div className="col-span-2">
+              <div className="text-gray-500">Prev Close</div>
+              <div>{data.previousClose.toFixed(2)}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <Card className="col-span-1">
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-sm font-medium">
           {title}
-          {timeframe === "previousDay" && data.date && (
+          {timeframe === "previousDay" && data?.date && (
             <span className="block text-xs text-gray-500 font-normal">
               {new Date(data.date).toLocaleDateString()}
             </span>
@@ -566,100 +695,7 @@ export default function TimeframeCard({
           </Button>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {/* OHLC Values */}
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <span className="text-xs text-gray-500">Open</span>
-            <div className="text-lg font-bold">{data.opening.toFixed(2)}</div>
-          </div>
-          <div>
-            <span className="text-xs text-gray-500">Close</span>
-            <div className={`text-lg font-bold ${priceColor}`}>
-              {data.closing.toFixed(2)}
-            </div>
-          </div>
-          <div>
-            <span className="text-xs text-gray-500">High</span>
-            <div className="text-lg font-bold">{data.highest.toFixed(2)}</div>
-          </div>
-          <div>
-            <span className="text-xs text-gray-500">Low</span>
-            <div className="text-lg font-bold">{data.lowest.toFixed(2)}</div>
-          </div>
-        </div>
-
-        {/* Day-to-Day Price Change */}
-        <div className={`flex justify-end ${dayToDayChangeColor}`}>
-          <span className="font-medium">
-            {dayToDayChange >= 0 ? "+" : ""}
-            {dayToDayChange.toFixed(2)} ({dayToDayPercentChange.toFixed(2)}%)
-          </span>
-        </div>
-
-        {/* Candlestick Visualization */}
-        <div className="relative h-20 mt-2 flex items-center justify-center">
-          {/* Container for the candlestick */}
-          <div className="relative h-full w-20">
-            {/* Upper Wick */}
-            {upperWickHeight > 0 && (
-              <div
-                className="absolute w-px bg-gray-800 left-1/2 transform -translate-x-1/2"
-                style={{
-                  top: `${highPosition}px`,
-                  height: `${upperWickHeight}px`,
-                }}
-              ></div>
-            )}
-
-            {/* Candle Body */}
-            <div
-              className={`absolute w-10 left-1/2 transform -translate-x-1/2 ${bodyColor}`}
-              style={{
-                top: `${bodyTop}px`,
-                height: `${bodyHeight}px`,
-              }}
-            ></div>
-
-            {/* Lower Wick */}
-            {lowerWickHeight > 0 && (
-              <div
-                className="absolute w-px bg-gray-800 left-1/2 transform -translate-x-1/2"
-                style={{
-                  top: `${bodyBottom}px`,
-                  height: `${lowerWickHeight}px`,
-                }}
-              ></div>
-            )}
-
-            {/* Current Price Line (if real-time data available) */}
-            {currentPricePosition !== null && (
-              <div
-                className="absolute w-full h-px bg-blue-500 left-0 z-10"
-                style={{ top: `${currentPricePosition}px` }}
-              >
-                <div className="absolute right-full mr-1 text-xs text-blue-500 font-medium">
-                  {realTimePrice?.toFixed(2)}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Previous close reference if available */}
-        {hasValidPreviousClose && (
-          <div className="text-xs text-gray-500 text-right">
-            Previous close: {previousClose.toFixed(2)}
-          </div>
-        )}
-
-        {timeframe === "currentDay" && isConnected && (
-          <div className="flex items-center justify-end mt-1">
-            <Activity className="h-3 w-3 text-green-500 animate-pulse mr-1" />
-            <span className="text-xs text-gray-500">Real-time data</span>
-          </div>
-        )}
-      </CardContent>
+      <CardContent className="space-y-4">{renderStockData()}</CardContent>
     </Card>
   );
 }

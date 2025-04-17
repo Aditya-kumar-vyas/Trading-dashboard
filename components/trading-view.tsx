@@ -26,7 +26,9 @@ import TimeframeCard from "./timeframe-card";
 import MorningRangeBreakoutCard from "./morning-range-breakout-card"; // Import the new component
 import TechnicalIndicatorCard from "./indicator-card";
 import PivotCard from "./pivot-grid";
+import StockScanner from "./stock-scanner"; // Import the StockScanner component
 import { PivotType } from "../lib/indicator";
+import DebugPanel from "./debug-panel";
 
 export default function TradingView(): JSX.Element {
   const [interval, setInterval] = useState<Interval>("day");
@@ -199,10 +201,11 @@ export default function TradingView(): JSX.Element {
         className="space-y-4"
       >
         <TabsList>
-          <TabsTrigger value="timeframes">OHLC</TabsTrigger>
-          <TabsTrigger value="moving-averages">Moving Averages</TabsTrigger>
-          <TabsTrigger value="atr">True Range Indicators</TabsTrigger>
+          <TabsTrigger value="timeframes">OHLC Timeframes</TabsTrigger>
+          <TabsTrigger value="indicators">Indicators</TabsTrigger>
           <TabsTrigger value="pivots">Pivot Points</TabsTrigger>
+          <TabsTrigger value="breakouts">Breakouts</TabsTrigger>
+          <TabsTrigger value="scanner">Stock Scanner</TabsTrigger>
         </TabsList>
 
         <TabsContent value="timeframes" className="space-y-4">
@@ -233,7 +236,7 @@ export default function TradingView(): JSX.Element {
           </div>
         </TabsContent>
 
-        <TabsContent value="moving-averages" className="space-y-4">
+        <TabsContent value="indicators" className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* Simple Moving Averages */}
             <TechnicalIndicatorCard
@@ -401,7 +404,17 @@ export default function TradingView(): JSX.Element {
             />
           </div>
         </TabsContent>
+
+        {/* New Scanner Tab */}
+        <TabsContent value="scanner" className="space-y-4">
+          <div className="grid gap-4 grid-cols-1">
+            <StockScanner />
+          </div>
+        </TabsContent>
       </Tabs>
+
+      {/* Debug panel at the end */}
+      <DebugPanel />
     </div>
   );
 }

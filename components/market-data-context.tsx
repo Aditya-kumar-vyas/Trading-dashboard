@@ -303,6 +303,19 @@ export function MarketDataProvider({
     }
   };
 
+  useEffect(() => {
+    // Debug information about market data
+    console.log("Market data status:", {
+      isConnected,
+      instrumentsCount: Object.keys(marketData).length,
+      instruments: Object.keys(marketData),
+      sampleData:
+        Object.keys(marketData).length > 0
+          ? marketData[Object.keys(marketData)[0]]
+          : "No data yet",
+    });
+  }, [isConnected, marketData]);
+
   return (
     <MarketDataContext.Provider
       value={{

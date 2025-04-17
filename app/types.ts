@@ -1,4 +1,3 @@
-
 export type InstrumentOption = {
   key: string;
   label: string;
@@ -75,3 +74,61 @@ export type IndicatorType =
   | 'ST';  // Super Trend
 
 export type PriceField = 'open' | 'high' | 'low' | 'close';
+
+// Stock scanner types
+export interface ScanCondition {
+  id: string;
+  field: string;
+  operator: string;
+  value: string;
+  timeframe: string;
+  comparisonField?: string;
+  comparisonTimeframe?: string;
+}
+
+export interface ScanResult {
+  instrumentKey: string;
+  instrumentName: string;
+  currentPrice: number;
+  percentChange: number;
+  matchedConditions: number;
+  fieldValues: Record<string, any>;
+}
+
+export type ComparisonOperator = 
+  | "greaterThan"
+  | "lessThan"
+  | "greaterThanEqual"
+  | "lessThanEqual"
+  | "equals"
+  | "notEquals"
+  | "crossedAbove"
+  | "crossedBelow";
+
+export type ScanTimeframe =
+  | "current"
+  | "1DayAgo"
+  | "2DaysAgo"
+  | "3DaysAgo"
+  | "1WeekAgo"
+  | "2WeeksAgo"
+  | "1MonthAgo";
+
+export type ScanField =
+  | "open"
+  | "high"
+  | "low"
+  | "close"
+  | "volume"
+  | "percentChange";
+
+export type MarketSegment =
+  | "nifty50"
+  | "nifty500"
+  | "niftyBank"
+  | "niftyIT"
+  | "niftyMidcap50"
+  | "niftyMidcap100"
+  | "niftyMidcap150";
+
+export type MatchMode = "all" | "any";

@@ -20,9 +20,39 @@ export default function DebugPanel() {
       if (response.ok) {
         const data = await response.json();
         setDebugInfo(data.info);
+      } else {
+        setDebugInfo({
+          error: `Failed to fetch debug info: ${response.status}`,
+        });
       }
-    } catch (error) {
-      console.error("Error fetching debug info:", error);
+    } catch (error: any) {
+      setDebugInfo({ error: `Error: ${error.message}` });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const checkTokenValidity = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch("/api/check-token");
+      if (response.ok) {
+        const data = await response.json();
+        setDebugInfo({
+          ...debugInfo,
+          tokenCheck: data,
+        });
+      } else {
+        setDebugInfo({
+          ...debugInfo,
+          tokenCheck: { error: `Failed to check token: ${response.status}` },
+        });
+      }
+    } catch (error: any) {
+      setDebugInfo({
+        ...debugInfo,
+        tokenCheck: { error: `Error: ${error.message}` },
+      });
     } finally {
       setIsLoading(false);
     }
@@ -57,30 +87,21 @@ export default function DebugPanel() {
   };
 
   return (
-    <>
-      {!isOpen && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="fixed bottom-4 right-4 bg-white shadow-md"
-          onClick={() => {
-            setIsOpen(true);
-            fetchDebugInfo();
-          }}
-        >
-          <Info className="h-4 w-4 mr-1" />
-          Debug
-        </Button>
-      )}
-
-      {isOpen && (
-        <Card className="fixed bottom-4 right-4 w-96 shadow-lg z-50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
+    <div className="fixed bottom-4 right-4 z-50">
+      {isOpen ? (
+        <Card className="w-96 max-h-[80vh] overflow-auto shadow-lg">
+          <CardHeader className="flex flex-row items-center justify-between py-2">
             <CardTitle className="text-sm font-medium">
-              Real-Time Debug Info
+              <Activity className="h-4 w-4 inline-block mr-2" />
+              Debug Information
             </CardTitle>
-            <div className="flex items-center space-x-2">
-              <Button variant="ghost" size="sm" onClick={fetchDebugInfo}>
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={fetchDebugInfo}
+                disabled={isLoading}
+              >
                 <RefreshCw
                   className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`}
                 />
@@ -94,137 +115,56 @@ export default function DebugPanel() {
               </Button>
             </div>
           </CardHeader>
-          <CardContent className="space-y-4 text-xs">
-            {/* WebSocket Status */}
-            <div className="space-y-1">
-              <h3 className="font-semibold">WebSocket Status</h3>
-              <div className="flex items-center">
-                Status:
-                <Badge
+          <CardContent className="text-xs">
+            <div className="flex flex-col gap-2">
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <Button
+                  size="sm"
                   variant="outline"
-                  className={`ml-2 ${
-                    isConnected
-                      ? "text-green-500 border-green-500"
-                      : "text-red-500 border-red-500"
-                  }`}
+                  onClick={fetchDebugInfo}
+                  disabled={isLoading}
+                >
+                  Refresh Status
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={checkTokenValidity}
+                  disabled={isLoading}
+                >
+                  Check API Token
+                </Button>
+              </div>
+              <div className="rounded border p-2 bg-muted/50">
+                <p className="font-medium mb-1">WebSocket Status:</p>
+                <Badge
+                  variant={isConnected ? "default" : "destructive"}
+                  className="mb-1"
                 >
                   {isConnected ? "Connected" : "Disconnected"}
                 </Badge>
-                {isConnected && (
-                  <Activity className="h-3 w-3 text-green-500 animate-pulse ml-1" />
-                )}
+                <p className="text-muted-foreground">
+                  {Object.keys(marketData).length} instruments loaded
+                </p>
               </div>
-            </div>
 
-            {/* Market Data Status */}
-            <div className="space-y-1">
-              <h3 className="font-semibold">Market Data</h3>
-              {(() => {
-                const status = getMarketDataStatus();
-                return (
-                  <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-                    <div>Instruments:</div>
-                    <div>{status.instrumentCount}</div>
-
-                    <div>Has OHLC:</div>
-                    <div>
-                      <Badge
-                        variant="outline"
-                        className={
-                          status.hasOHLC
-                            ? "text-green-500 border-green-500"
-                            : "text-amber-500 border-amber-500"
-                        }
-                      >
-                        {status.hasOHLC ? "Yes" : "No"}
-                      </Badge>
-                    </div>
-
-                    <div>Latest Update:</div>
-                    <div>{status.latestUpdate}</div>
-
-                    {status.instruments.length > 0 && (
-                      <>
-                        <div className="col-span-2 mt-1">Instrument List:</div>
-                        <div className="col-span-2 pl-2">
-                          {status.instruments.map((instr, idx) => (
-                            <div key={idx}>{instr}</div>
-                          ))}
-                          {status.instrumentCount > 5 && (
-                            <div>...and {status.instrumentCount - 5} more</div>
-                          )}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* API Debug Info */}
-            {debugInfo && (
-              <div className="space-y-1">
-                <h3 className="font-semibold">API Diagnostics</h3>
-                <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-                  <div>API Token:</div>
-                  <div>
-                    <Badge
-                      variant="outline"
-                      className={
-                        debugInfo.apiTokenPresent
-                          ? "text-green-500 border-green-500"
-                          : "text-red-500 border-red-500"
-                      }
-                    >
-                      {debugInfo.apiTokenPresent ? "Present" : "Missing"}
-                    </Badge>
-                  </div>
-
-                  <div>WS Auth:</div>
-                  <div>
-                    <Badge
-                      variant="outline"
-                      className={
-                        debugInfo.wsAuthSuccess
-                          ? "text-green-500 border-green-500"
-                          : "text-red-500 border-red-500"
-                      }
-                    >
-                      {debugInfo.wsAuthSuccess
-                        ? "Success"
-                        : `Failed (${debugInfo.wsAuthStatus})`}
-                    </Badge>
-                  </div>
-
-                  <div>Today's Data:</div>
-                  <div>
-                    <Badge
-                      variant="outline"
-                      className={
-                        debugInfo.hasTodayData
-                          ? "text-green-500 border-green-500"
-                          : "text-amber-500 border-amber-500"
-                      }
-                    >
-                      {debugInfo.hasTodayData
-                        ? `Yes (${debugInfo.candleCount} candles)`
-                        : "No"}
-                    </Badge>
-                  </div>
-
-                  <div>Time:</div>
-                  <div>{new Date(debugInfo.timestamp).toLocaleString()}</div>
+              {/* Debug info display */}
+              {debugInfo && (
+                <div className="p-2 rounded border bg-muted/50 break-all">
+                  <pre className="text-[10px] leading-tight">
+                    {JSON.stringify(debugInfo, null, 2)}
+                  </pre>
                 </div>
-              </div>
-            )}
-
-            <div className="text-xs text-gray-500">
-              If you see "No data available" for today, check if today is a
-              trading day. For WebSocket issues, try refreshing the page.
+              )}
             </div>
           </CardContent>
         </Card>
+      ) : (
+        <Button variant="outline" size="sm" onClick={() => setIsOpen(true)}>
+          <Info className="h-4 w-4 mr-2" />
+          Debug
+        </Button>
       )}
-    </>
+    </div>
   );
 }
