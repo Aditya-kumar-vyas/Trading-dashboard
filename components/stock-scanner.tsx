@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { useMarketData } from "./market-data-context";
 import { INSTRUMENTS, INTERVALS } from "@/app/constants";
+import { INDEX_TO_STOCKS, getStocksForIndex } from "@/app/indices-stocks";
 import {
   Sheet,
   SheetContent,
@@ -510,20 +511,41 @@ export default function StockScanner() {
       `Found index instrument for ${segment}: ${indexInstrument.label}`
     );
 
-    // In a real application, we would:
-    // 1. Fetch constituent stocks of the index from an API or database
-    // 2. Filter INSTRUMENTS to only include those constituents
-    // 3. Return the filtered list
+    // Map segment names to our index names in the INDEX_TO_STOCKS map
+    const segmentToIndexName: Record<string, string> = {
+      nifty50: "NIFTY 50",
+      niftyBank: "Nifty Bank",
+      niftyIT: "Nifty IT",
+      niftyPharma: "Nifty Pharma",
+      niftyFMCG: "Nifty FMCG",
+      niftyMetal: "Nifty Metal",
+      niftyRealty: "Nifty Realty",
+      niftyPSUBank: "Nifty PSU Bank",
+      niftyPvtBank: "Nifty Pvt Bank",
+      nifty500: "Nifty 500",
+      // Add more mappings as needed
+    };
 
-    // For demonstration purposes, we're returning just the index instrument
-    // and a few random stocks to simulate the behavior
+    // Get the corresponding index name for our segment
+    const indexName = segmentToIndexName[segment];
+
+    if (indexName && INDEX_TO_STOCKS[indexName]) {
+      // We have defined stocks for this index, return them
+      const indexStocks = getStocksForIndex(indexName);
+      console.log(
+        `Returning ${indexStocks.length} instruments for ${segment} from defined stocks list`
+      );
+      return [indexInstrument, ...indexStocks];
+    }
+
+    // For demonstration purposes or indices we haven't defined yet, return a few mock stocks
     const mockConstituents = [
       indexInstrument,
       ...INSTRUMENTS.filter((inst) => inst.key.includes("NSE|")).slice(0, 10),
     ];
 
     console.log(
-      `Returning ${mockConstituents.length} instruments for ${segment}`
+      `Returning ${mockConstituents.length} instruments for ${segment} (mock data)`
     );
     return mockConstituents;
   };

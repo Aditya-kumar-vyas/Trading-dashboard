@@ -131,29 +131,6 @@ function SearchFilter({
 
   return (
     <div className="relative">
-      <label className="block text-sm font-medium mb-2">
-        Search Instrument
-      </label>
-      <div className="relative">
-        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          <Search className="h-4 w-4 text-gray-400" />
-        </div>
-        <input
-          type="text"
-          className="border rounded-md pl-10 py-2 w-full focus:outline-none focus:ring-2 focus:ring-primary"
-          placeholder="Search instruments..."
-          value={searchTerm}
-          onChange={handleSearchChange}
-          onFocus={(): void => {
-            if (searchTerm) setShowDropdown(true);
-          }}
-          onBlur={(): void => {
-            // Delay hiding dropdown to allow click events to register
-            setTimeout(() => setShowDropdown(false), 200);
-          }}
-        />
-      </div>
-
       {showDropdown && filteredOptions.length > 0 && (
         <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto">
           {filteredOptions.map((option) => (
