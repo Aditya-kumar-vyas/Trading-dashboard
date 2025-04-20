@@ -27,6 +27,7 @@ import MorningRangeBreakoutCard from "./morning-range-breakout-card";
 import TechnicalIndicatorCard from "./indicator-card";
 import PivotCard from "./pivot-grid";
 import StockScanner from "./stock-scanner";
+import TimeframeTable from "./timeframe-table";
 import { PivotType } from "../lib/indicator";
 import { INDEX_TO_STOCKS, getStocksForIndex } from "../app/indices-stocks";
 
@@ -363,6 +364,12 @@ export default function TradingView(): JSX.Element {
             OHLC Timeframes
           </TabsTrigger>
           <TabsTrigger
+            value="tableview"
+            className="dark:data-[state=active]:bg-gray-700 dark:text-gray-300 dark:data-[state=active]:text-white"
+          >
+            Table View
+          </TabsTrigger>
+          <TabsTrigger
             value="indicators"
             className="dark:data-[state=active]:bg-gray-700 dark:text-gray-300 dark:data-[state=active]:text-white"
           >
@@ -414,6 +421,16 @@ export default function TradingView(): JSX.Element {
               />
             ))}
           </div>
+        </TabsContent>
+
+        <TabsContent value="tableview" className="space-y-4">
+          <TimeframeTable
+            instrument={instrument}
+            indexStocks={indexStocks}
+            interval={interval}
+            refreshTrigger={refreshTrigger}
+            onRefresh={handleGlobalRefresh}
+          />
         </TabsContent>
 
         <TabsContent value="indicators" className="space-y-4">

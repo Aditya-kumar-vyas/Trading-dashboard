@@ -17,6 +17,23 @@ interface MorningRangeBreakoutCardProps {
   onRefresh: () => void;
 }
 
+// Interface for storing morning range data in localStorage
+interface StoredMorningRangeData {
+  instrument: string;
+  date: string; // YYYY-MM-DD format
+  rangeData: {
+    high: number;
+    low: number;
+    open: number;
+    close: number;
+    timestamp: string;
+  };
+  breakouts: {
+    highBreakout: { price: number; timestamp: string } | null;
+    lowBreakout: { price: number; timestamp: string } | null;
+  };
+}
+
 export default function MorningRangeBreakoutCard({
   title = "Morning Range Breakout",
   instrument,
@@ -26,11 +43,17 @@ export default function MorningRangeBreakoutCard({
   const [morningRange, setMorningRange] = useState<{
     high: number;
     low: number;
+    open: number; // Added open price
+    close: number; // Added close price at 10:00
     hasData: boolean;
+    timestamp: string; // Added timestamp
   }>({
     high: 0,
     low: 0,
+    open: 0,
+    close: 0,
     hasData: false,
+    timestamp: "",
   });
 
   const [breakouts, setBreakouts] = useState<{
@@ -45,9 +68,89 @@ export default function MorningRangeBreakoutCard({
   const [error, setError] = useState<string | null>(null);
   const [morningPeriodComplete, setMorningPeriodComplete] =
     useState<boolean>(false);
+  const [dataSource, setDataSource] = useState<
+    "realtime" | "historical" | "localStorage"
+  >("historical");
 
   // Get market data context for real-time updates
   const { isConnected, marketData } = useMarketData();
+
+  // Get today's date in YYYY-MM-DD format for localStorage key
+  const getTodayDateString = (): string => {
+    const today = new Date();
+    return format(today, "yyyy-MM-dd");
+  };
+
+  // LocalStorage keys
+  const getLocalStorageKey = (): string => {
+    return `morningRange_${instrument}_${getTodayDateString()}`;
+  };
+
+  // Save morning range data to localStorage
+  const saveMorningRangeToLocalStorage = (
+    rangeData: typeof morningRange,
+    breakoutData: typeof breakouts
+  ): void => {
+    if (!rangeData.hasData) return;
+
+    try {
+      const dataToStore: StoredMorningRangeData = {
+        instrument,
+        date: getTodayDateString(),
+        rangeData: {
+          high: rangeData.high,
+          low: rangeData.low,
+          open: rangeData.open,
+          close: rangeData.close,
+          timestamp: rangeData.timestamp || new Date().toISOString(),
+        },
+        breakouts: breakoutData,
+      };
+
+      localStorage.setItem(getLocalStorageKey(), JSON.stringify(dataToStore));
+      console.log("Morning range data saved to localStorage", dataToStore);
+    } catch (error) {
+      console.error("Error saving morning range to localStorage:", error);
+    }
+  };
+
+  // Load morning range data from localStorage
+  const loadMorningRangeFromLocalStorage = (): boolean => {
+    try {
+      const storedData = localStorage.getItem(getLocalStorageKey());
+      if (!storedData) return false;
+
+      const parsedData: StoredMorningRangeData = JSON.parse(storedData);
+
+      // Verify data belongs to the current instrument and today
+      if (
+        parsedData.instrument === instrument &&
+        parsedData.date === getTodayDateString()
+      ) {
+        // Set the morning range data from localStorage
+        setMorningRange({
+          high: parsedData.rangeData.high,
+          low: parsedData.rangeData.low,
+          open: parsedData.rangeData.open,
+          close: parsedData.rangeData.close,
+          hasData: true,
+          timestamp: parsedData.rangeData.timestamp,
+        });
+
+        // Set breakouts if available
+        setBreakouts(parsedData.breakouts);
+
+        setDataSource("localStorage");
+        console.log("Loaded morning range data from localStorage", parsedData);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error("Error loading morning range from localStorage:", error);
+      return false;
+    }
+  };
 
   // Initialize and check if we're in the morning range period (9:15-10:00 AM)
   useEffect(() => {
@@ -77,25 +180,45 @@ export default function MorningRangeBreakoutCard({
     return () => clearInterval(intervalId);
   }, []);
 
-  // Fetch historical data for the morning range if we missed it
+  // Every time the morning period status changes, check if we need to save data
+  useEffect(() => {
+    if (morningPeriodComplete && morningRange.hasData) {
+      saveMorningRangeToLocalStorage(morningRange, breakouts);
+    }
+  }, [morningPeriodComplete, morningRange.hasData]);
+
+  // When breakouts change, save the updated data
+  useEffect(() => {
+    if (morningRange.hasData) {
+      saveMorningRangeToLocalStorage(morningRange, breakouts);
+    }
+  }, [breakouts]);
+
   const fetchMorningRangeData = async (): Promise<void> => {
     setIsLoading(true);
     setError(null);
 
-    // Get today's date
-    const today = new Date();
-    const formattedDate = format(today, "yyyy-MM-dd");
+    // First try to load data from localStorage
+    const dataLoaded = loadMorningRangeFromLocalStorage();
+    if (dataLoaded) {
+      setIsLoading(false);
+      return;
+    }
 
     try {
-      // Fetch today's minute candles
+      // Get today's date
+      const today = new Date();
+      const formattedDate = format(today, "yyyy-MM-dd");
+
+      // Use minute candles for more precise data
       const response = await fetch(
         `/api/historical-data?instrument=${encodeURIComponent(
           instrument
-        )}&interval=1minute&to_date=${formattedDate}&from_date=${formattedDate}`
+        )}&interval=minute&to_date=${formattedDate}&from_date=${formattedDate}`
       );
 
       if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
+        throw new Error(`Error fetching data: ${response.status}`);
       }
 
       const result: APIResponse = await response.json();
@@ -130,11 +253,31 @@ export default function MorningRangeBreakoutCard({
           const morningHigh = Math.max(...morningCandles.map((c) => c.high));
           const morningLow = Math.min(...morningCandles.map((c) => c.low));
 
-          setMorningRange({
+          // Get open price (first candle of the morning range)
+          const openPrice = morningCandles[0].open;
+
+          // Get close price (last candle of the morning range)
+          const closePrice = morningCandles[morningCandles.length - 1].close;
+
+          // Get the timestamp of the 10:00 AM candle
+          const lastCandleTimestamp =
+            morningCandles[morningCandles.length - 1].timestamp;
+
+          // Update state with all the data
+          const updatedMorningRange = {
             high: morningHigh,
             low: morningLow,
+            open: openPrice,
+            close: closePrice,
             hasData: true,
-          });
+            timestamp: lastCandleTimestamp,
+          };
+
+          setMorningRange(updatedMorningRange);
+          setDataSource("historical");
+
+          // Save to localStorage
+          saveMorningRangeToLocalStorage(updatedMorningRange, breakouts);
 
           // If we already have data for the complete morning period,
           // check for historical breakouts
@@ -196,10 +339,15 @@ export default function MorningRangeBreakoutCard({
       }
     }
 
-    setBreakouts({
+    const updatedBreakouts = {
       highBreakout,
       lowBreakout,
-    });
+    };
+
+    setBreakouts(updatedBreakouts);
+
+    // Save updated breakouts to localStorage
+    saveMorningRangeToLocalStorage(morningRange, updatedBreakouts);
   };
 
   // Get current price from WebSocket data
@@ -244,25 +392,61 @@ export default function MorningRangeBreakoutCard({
     // Only update morning range if we're in the 9:15-10:00 period
     if ((hours === 9 && minutes >= 15) || (hours === 10 && minutes === 0)) {
       const currentPrice = getCurrentPriceFromWebSocket();
+      const currentTimestamp =
+        getTimestampFromWebSocket() || new Date().toISOString();
 
       if (currentPrice === null) return;
 
       // Initialize morning range if it's the first data point
       if (!morningRange.hasData) {
-        setMorningRange({
+        const newRangeData = {
           high: currentPrice,
           low: currentPrice,
+          open: currentPrice, // Set open price to first recorded price
+          close: currentPrice, // Initially same as current price
           hasData: true,
-        });
+          timestamp: currentTimestamp,
+        };
+
+        setMorningRange(newRangeData);
+        setDataSource("realtime");
+
+        // Save to localStorage
+        saveMorningRangeToLocalStorage(newRangeData, breakouts);
         return;
       }
 
-      // Update high and low if current price exceeds them
-      setMorningRange((prev) => ({
-        high: Math.max(prev.high, currentPrice),
-        low: Math.min(prev.low, currentPrice),
-        hasData: true,
-      }));
+      // Update high, low, and close as needed
+      setMorningRange((prev) => {
+        const updatedData = {
+          high: Math.max(prev.high, currentPrice),
+          low: Math.min(prev.low, currentPrice),
+          open: prev.open, // Keep the original opening price
+          close: currentPrice, // Update the close price with each tick
+          hasData: true,
+          timestamp: currentTimestamp,
+        };
+
+        // Don't save to localStorage with every tick to avoid performance issues
+        // We'll save when the morning period completes
+
+        return updatedData;
+      });
+    }
+
+    // If we just reached 10:00 AM, save the final data
+    if (hours === 10 && minutes === 0) {
+      const finalPrice = getCurrentPriceFromWebSocket();
+      if (finalPrice !== null && morningRange.hasData) {
+        const finalRangeData = {
+          ...morningRange,
+          close: finalPrice,
+          timestamp: new Date().toISOString(),
+        };
+
+        setMorningRange(finalRangeData);
+        saveMorningRangeToLocalStorage(finalRangeData, breakouts);
+      }
     }
   }, [marketData, isConnected]);
 
@@ -283,31 +467,46 @@ export default function MorningRangeBreakoutCard({
     if (!breakouts.highBreakout && currentPrice > morningRange.high) {
       const timestamp = getTimestampFromWebSocket() || new Date().toISOString();
 
-      setBreakouts((prev) => ({
-        ...prev,
+      const updatedBreakouts = {
+        ...breakouts,
         highBreakout: {
           price: currentPrice,
           timestamp,
         },
-      }));
+      };
+
+      setBreakouts(updatedBreakouts);
+      saveMorningRangeToLocalStorage(morningRange, updatedBreakouts);
     }
 
     // Check for low breakout if not already detected
     if (!breakouts.lowBreakout && currentPrice < morningRange.low) {
       const timestamp = getTimestampFromWebSocket() || new Date().toISOString();
 
-      setBreakouts((prev) => ({
-        ...prev,
+      const updatedBreakouts = {
+        ...breakouts,
         lowBreakout: {
           price: currentPrice,
           timestamp,
         },
-      }));
+      };
+
+      setBreakouts(updatedBreakouts);
+      saveMorningRangeToLocalStorage(morningRange, updatedBreakouts);
     }
   }, [marketData, isConnected, morningRange, morningPeriodComplete]);
 
   // Initial data fetch when component mounts or refreshed
   useEffect(() => {
+    // First try to load from localStorage
+    const loadedFromStorage = loadMorningRangeFromLocalStorage();
+
+    if (loadedFromStorage) {
+      setIsLoading(false);
+      return;
+    }
+
+    // If not found in localStorage, fetch from API
     const now = new Date();
     const hours = now.getHours();
     const minutes = now.getMinutes();
@@ -400,7 +599,15 @@ export default function MorningRangeBreakoutCard({
   return (
     <Card className="col-span-1">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        <CardTitle className="text-sm font-medium">
+          {title}
+          {morningRange.timestamp && (
+            <span className="block text-xs text-gray-500 font-normal">
+              {format(new Date(morningRange.timestamp), "yyyy-MM-dd")}
+              {dataSource === "localStorage" && " (Stored)"}
+            </span>
+          )}
+        </CardTitle>
         <div className="flex items-center space-x-2">
           {isConnected && marketData[instrument] && (
             <Badge
@@ -427,6 +634,18 @@ export default function MorningRangeBreakoutCard({
             )}
           </h3>
           <div className="grid grid-cols-2 gap-2">
+            <div>
+              <span className="text-xs text-gray-500">Open</span>
+              <div className="text-lg font-bold">
+                {morningRange.open.toFixed(2)}
+              </div>
+            </div>
+            <div>
+              <span className="text-xs text-gray-500">Close (10:00)</span>
+              <div className="text-lg font-bold">
+                {morningRange.close.toFixed(2)}
+              </div>
+            </div>
             <div>
               <span className="text-xs text-gray-500">High</span>
               <div className="text-lg font-bold">
