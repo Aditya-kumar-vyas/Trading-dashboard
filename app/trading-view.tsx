@@ -30,10 +30,20 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { INSTRUMENTS, INTERVALS } from "./constants";
 import { Interval, OHLCData, APIResponse, Candle } from "./types";
 import DebugPanel from "../components/debug-panel";
+import { useMarketData } from "../components/market-data-context";
 
 // Define clear interfaces for props and state
 interface SearchFilterProps {
@@ -76,6 +86,7 @@ interface RealTimeOHLC {
 }
 
 type Timeframe =
+  | "currentDay"
   | "previousDay"
   | "threeDays"
   | "currentWeek"
@@ -644,26 +655,589 @@ function RealTimeCard({
   );
 }
 
+function TimeframeTable({
+  instrument,
+  interval,
+  refreshTrigger,
+  onRefresh,
+  timeframes,
+}: {
+  instrument: string;
+  interval: Interval;
+  refreshTrigger: number;
+  onRefresh: () => void;
+  timeframes: { title: string; id: Timeframe }[];
+}): JSX.Element {
+  const [timeframeData, setTimeframeData] = useState<
+    Record<string, StatsData | null>
+  >({});
+  const [multiStockData, setMultiStockData] = useState<
+    Record<string, Record<string, StatsData | null>>
+  >({});
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [realTimePrice, setRealTimePrice] = useState<number | null>(null);
+  const { isConnected, marketData } = useMarketData();
+  const isAllStocks = instrument === "all";
+
+  console.log(
+    "TimeframeTable rendered with instrument:",
+    instrument,
+    "isAllStocks:",
+    isAllStocks
+  );
+
+  // Fetch data for single stock across all timeframes
+  useEffect(() => {
+    if (isAllStocks) {
+      console.log(
+        "Skipping single stock data fetch because 'all stocks' is selected"
+      );
+      return;
+    }
+
+    console.log(
+      "Fetching data for single stock:",
+      instrument,
+      "across all timeframes"
+    );
+
+    const fetchAllData = async () => {
+      setIsLoading(true);
+      const newData: Record<string, StatsData | null> = {};
+
+      // Fetch data for each timeframe
+      for (const tf of timeframes) {
+        if (tf.id === "realTime") continue; // Skip realTime as it's handled separately
+
+        try {
+          console.log(`Fetching data for timeframe: ${tf.title} (${tf.id})`);
+          const data = await fetchTimeframeData(tf.id, instrument);
+          newData[tf.id] = data;
+        } catch (err) {
+          console.error(`Error fetching data for ${tf.title}:`, err);
+          newData[tf.id] = null;
+        }
+      }
+
+      console.log("Single stock data fetched:", newData);
+      setTimeframeData(newData);
+      setIsLoading(false);
+    };
+
+    fetchAllData();
+  }, [instrument, interval, refreshTrigger, timeframes, isAllStocks]);
+
+  // Fetch data for all stocks for a specific timeframe (when "all" is selected)
+  useEffect(() => {
+    if (!isAllStocks) {
+      console.log(
+        "Skipping all stocks data fetch because a specific stock is selected"
+      );
+      return;
+    }
+
+    console.log("Fetching data for ALL stocks across timeframes");
+
+    const fetchAllStocksData = async () => {
+      setIsLoading(true);
+      const newData: Record<string, Record<string, StatsData | null>> = {};
+
+      for (const tf of timeframes) {
+        if (tf.id === "realTime") continue;
+
+        console.log(
+          `Processing timeframe: ${tf.title} (${tf.id}) for all stocks`
+        );
+        newData[tf.id] = {};
+
+        // Fetch each instrument for this timeframe
+        // For performance during debugging, limit to first 3 instruments
+        const limitedInstruments = INSTRUMENTS.slice(0, 3);
+
+        for (const inst of limitedInstruments) {
+          try {
+            console.log(
+              `Fetching data for instrument: ${inst.label} (${inst.key}) in timeframe ${tf.id}`
+            );
+            const data = await fetchTimeframeData(tf.id, inst.key);
+            newData[tf.id][inst.key] = data;
+          } catch (err) {
+            console.error(
+              `Error fetching data for ${inst.label} (${tf.title}):`,
+              err
+            );
+            newData[tf.id][inst.key] = null;
+          }
+        }
+      }
+
+      console.log("All stocks data fetched:", newData);
+      setMultiStockData(newData);
+      setIsLoading(false);
+    };
+
+    fetchAllStocksData();
+  }, [interval, refreshTrigger, timeframes, isAllStocks]);
+
+  // Add effect to update real-time price
+  useEffect(() => {
+    if (!isConnected || !marketData || !marketData[instrument] || isAllStocks) {
+      setRealTimePrice(null);
+      return;
+    }
+
+    const handlePriceUpdate = () => {
+      // Skip if no market data for this instrument
+      if (!marketData[instrument]) return;
+
+      // Try to get latest price from various formats
+      let price = null;
+      let source = "";
+
+      // First try the feedData format - indexFF for index feeds
+      if (marketData[instrument]?.ff?.indexFF?.ltpc?.ltp) {
+        price = parseFloat(marketData[instrument].ff.indexFF.ltpc.ltp);
+        source = "indexFF.ltpc.ltp";
+      }
+      // Try marketFF for stock feeds
+      else if (marketData[instrument]?.ff?.marketFF?.ltpc?.ltp) {
+        price = parseFloat(marketData[instrument].ff.marketFF.ltpc.ltp);
+        source = "marketFF.ltpc.ltp";
+      }
+      // Generic ff.ltp for any feed type
+      else if (marketData[instrument]?.ff?.ltp) {
+        price = parseFloat(marketData[instrument].ff.ltp);
+        source = "ff.ltp";
+      }
+      // Then try lastPrice if available
+      else if (marketData[instrument]?.lastPrice) {
+        price = parseFloat(marketData[instrument].lastPrice);
+        source = "lastPrice";
+      }
+      // Then try the dailyOHLC format
+      else if (marketData[instrument]?.dailyOHLC?.close) {
+        price = parseFloat(marketData[instrument].dailyOHLC.close);
+        source = "dailyOHLC.close";
+      }
+
+      if (price !== null && !isNaN(price)) {
+        setRealTimePrice(price);
+      }
+    };
+
+    // Initial update
+    handlePriceUpdate();
+
+    // Set up interval to update price every second
+    const interval = setInterval(handlePriceUpdate, 1000);
+
+    // Clean up interval on unmount or when deps change
+    return () => clearInterval(interval);
+  }, [isConnected, marketData, instrument, isAllStocks]);
+
+  const getDateRangeForTimeframe = (
+    timeframe: Timeframe
+  ): { fromDate: Date; toDate: Date } => {
+    const today = new Date();
+    let fromDate: Date;
+    let toDate: Date = today;
+
+    switch (timeframe) {
+      case "currentDay":
+        // For current day, set fromDate to start of today
+        fromDate = new Date(
+          today.getFullYear(),
+          today.getMonth(),
+          today.getDate()
+        );
+        break;
+      case "previousDay":
+        // For previous day, set both from and to date to yesterday
+        fromDate = subDays(today, 1);
+        toDate = subDays(today, 1);
+        break;
+      case "threeDays":
+        // Last 3 days including today
+        fromDate = subDays(today, 2);
+        break;
+      case "currentWeek":
+        // From Monday of current week to today
+        fromDate = startOfWeek(today, { weekStartsOn: 1 }); // Monday
+        break;
+      case "previousWeek":
+        // Previous full week (Monday to Friday)
+        const lastWeekStart = startOfWeek(subDays(today, 7), {
+          weekStartsOn: 1,
+        });
+        fromDate = lastWeekStart;
+        toDate = endOfWeek(lastWeekStart, { weekStartsOn: 1 });
+        break;
+      case "currentMonth":
+        // From 1st of current month to today
+        fromDate = startOfMonth(today);
+        break;
+      case "previousMonth":
+        // Full previous month
+        const lastMonth = subMonths(today, 1);
+        fromDate = startOfMonth(lastMonth);
+        toDate = endOfMonth(lastMonth);
+        break;
+      case "currentQuarter":
+        // Current quarter (Q1: Jan-Mar, Q2: Apr-Jun, Q3: Jul-Sep, Q4: Oct-Dec)
+        const currentMonth = today.getMonth();
+        const quarterStartMonth = Math.floor(currentMonth / 3) * 3;
+        fromDate = new Date(today.getFullYear(), quarterStartMonth, 1);
+        break;
+      case "previousQuarter":
+        // Previous quarter
+        const currentQuarter = Math.floor(today.getMonth() / 3);
+        let prevQuarter, prevQuarterYear;
+
+        if (currentQuarter === 0) {
+          prevQuarter = 3; // Q4
+          prevQuarterYear = today.getFullYear() - 1;
+        } else {
+          prevQuarter = currentQuarter - 1;
+          prevQuarterYear = today.getFullYear();
+        }
+
+        const prevQuarterStartMonth = prevQuarter * 3;
+        fromDate = new Date(prevQuarterYear, prevQuarterStartMonth, 1);
+        toDate = new Date(prevQuarterYear, prevQuarterStartMonth + 3, 0);
+        break;
+      case "currentYear":
+        // From January 1st of current year to today
+        fromDate = new Date(today.getFullYear(), 0, 1);
+        break;
+      case "previousYear":
+        // Full previous year (Jan 1 to Dec 31)
+        fromDate = new Date(today.getFullYear() - 1, 0, 1);
+        toDate = new Date(today.getFullYear() - 1, 11, 31);
+        break;
+      default:
+        fromDate = subDays(today, 7); // Default to 7 days
+    }
+
+    return { fromDate, toDate };
+  };
+
+  const fetchTimeframeData = async (
+    timeframe: Timeframe,
+    instrumentKey: string
+  ): Promise<StatsData | null> => {
+    try {
+      const { fromDate, toDate } = getDateRangeForTimeframe(timeframe);
+
+      // The API expects dates in format: to_date/from_date
+      const formattedFromDate = format(fromDate, "yyyy-MM-dd");
+      const formattedToDate = format(toDate, "yyyy-MM-dd");
+
+      console.log(
+        `API Request for ${instrumentKey}, timeframe ${timeframe}: from=${formattedFromDate}, to=${formattedToDate}`
+      );
+
+      const response = await fetch(
+        `/api/historical-data?instrument=${encodeURIComponent(
+          instrumentKey
+        )}&interval=${interval}&to_date=${formattedToDate}&from_date=${formattedFromDate}`
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+
+      const result: APIResponse = await response.json();
+
+      if (
+        result.status === "success" &&
+        result.data.candles &&
+        result.data.candles.length > 0
+      ) {
+        const candles = result.data.candles.map(transformCandle);
+
+        // Sort candles by timestamp in descending order (newest first)
+        candles.sort(
+          (a, b) =>
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        );
+
+        const data = {
+          // Opening price is the first candle's open (earliest date)
+          opening: candles[candles.length - 1].open,
+          // Closing price is the last candle's close (latest date)
+          closing: candles[0].close,
+          // Highest is max of all high prices in timeframe
+          highest: Math.max(...candles.map((d) => d.high)),
+          // Lowest is min of all low prices in timeframe
+          lowest: Math.min(...candles.map((d) => d.low)),
+        };
+
+        console.log(
+          `Data fetched for ${instrumentKey}, timeframe ${timeframe}:`,
+          data
+        );
+        return data;
+      }
+
+      console.log(
+        `No data available for ${instrumentKey}, timeframe ${timeframe}`
+      );
+      return null;
+    } catch (error) {
+      console.error(
+        `Error fetching data for ${timeframe} (${instrumentKey}):`,
+        error
+      );
+      return null;
+    }
+  };
+
+  const handleRefresh = (): void => {
+    onRefresh();
+  };
+
+  // Calculate change data
+  const calculateChangeData = (data: StatsData) => {
+    if (!data) return { changeValue: 0, changePercent: 0 };
+
+    const changeValue = data.closing - data.opening;
+    const changePercent = (changeValue / data.opening) * 100;
+
+    return {
+      changeValue,
+      changePercent,
+    };
+  };
+
+  if (isLoading) {
+    return (
+      <div className="text-center py-8">
+        <RefreshCw className="h-6 w-6 animate-spin text-gray-400 mx-auto mb-2" />
+        <p>Loading OHLC data{isAllStocks ? " for all stocks" : ""}...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return <div className="text-center text-red-500 py-8">{error}</div>;
+  }
+
+  console.log("Rendering TimeframeTable, isAllStocks:", isAllStocks);
+
+  // Render table for single stock (selected instrument)
+  if (!isAllStocks) {
+    console.log("Rendering single stock table view");
+
+    return (
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-[180px]">Time Frame</TableHead>
+              <TableHead>Open</TableHead>
+              <TableHead>High</TableHead>
+              <TableHead>Low</TableHead>
+              <TableHead>Close</TableHead>
+              <TableHead>Change</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {timeframes.map((tf) => {
+              if (tf.id === "realTime") {
+                // Skip or handle real-time data differently if needed
+                return null;
+              }
+
+              const data = timeframeData[tf.id];
+              if (!data) {
+                return (
+                  <TableRow key={tf.id}>
+                    <TableCell className="font-medium">{tf.title}</TableCell>
+                    <TableCell colSpan={5} className="text-gray-500">
+                      No data available
+                    </TableCell>
+                  </TableRow>
+                );
+              }
+
+              const { changeValue, changePercent } = calculateChangeData(data);
+              const isPositive = changeValue > 0;
+              const isNegative = changeValue < 0;
+              const changeColorClass = isPositive
+                ? "text-green-600"
+                : isNegative
+                ? "text-red-600"
+                : "text-gray-600";
+
+              return (
+                <TableRow key={tf.id}>
+                  <TableCell className="font-medium">{tf.title}</TableCell>
+                  <TableCell>{data.opening.toFixed(2)}</TableCell>
+                  <TableCell>{data.highest.toFixed(2)}</TableCell>
+                  <TableCell>{data.lowest.toFixed(2)}</TableCell>
+                  <TableCell>{data.closing.toFixed(2)}</TableCell>
+                  <TableCell className={changeColorClass}>
+                    {isPositive ? "+" : ""}
+                    {changeValue.toFixed(2)} ({isPositive ? "+" : ""}
+                    {changePercent.toFixed(2)}%)
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    );
+  }
+
+  // Render tables for all timeframes with all stocks
+  console.log("Rendering all stocks view with tabs");
+  console.log(
+    "Available timeframes:",
+    timeframes.map((tf) => tf.title).join(", ")
+  );
+  console.log(
+    "Available multi-stock data:",
+    Object.keys(multiStockData).join(", ")
+  );
+
+  return (
+    <div className="space-y-8">
+      <Tabs defaultValue="previousDay">
+        <TabsList className="mb-4 flex flex-wrap">
+          {timeframes.map((tf) => {
+            if (tf.id === "realTime") return null; // Skip realTime
+            return (
+              <TabsTrigger key={tf.id} value={tf.id}>
+                {tf.title}
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+
+        {timeframes.map((tf) => {
+          if (tf.id === "realTime") return null; // Skip realTime
+
+          const tfData = multiStockData[tf.id] || {};
+          const hasData = Object.keys(tfData).length > 0;
+
+          return (
+            <TabsContent key={tf.id} value={tf.id}>
+              <div className="overflow-x-auto">
+                <h3 className="text-lg font-semibold mb-2">
+                  {tf.title} OHLC Data for All Instruments
+                </h3>
+                {!hasData ? (
+                  <div className="text-center py-4 text-gray-500">
+                    No data available for this timeframe
+                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-[200px]">Instrument</TableHead>
+                        <TableHead>Open</TableHead>
+                        <TableHead>High</TableHead>
+                        <TableHead>Low</TableHead>
+                        <TableHead>Close</TableHead>
+                        <TableHead>Change</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {Object.entries(tfData).map(([instKey, data]) => {
+                        if (!data) {
+                          const instLabel =
+                            INSTRUMENTS.find((inst) => inst.key === instKey)
+                              ?.label || instKey;
+                          return (
+                            <TableRow key={instKey}>
+                              <TableCell className="font-medium">
+                                {instLabel}
+                              </TableCell>
+                              <TableCell colSpan={5} className="text-gray-500">
+                                No data available
+                              </TableCell>
+                            </TableRow>
+                          );
+                        }
+
+                        const instLabel =
+                          INSTRUMENTS.find((inst) => inst.key === instKey)
+                            ?.label || instKey;
+                        const { changeValue, changePercent } =
+                          calculateChangeData(data);
+                        const isPositive = changeValue > 0;
+                        const isNegative = changeValue < 0;
+                        const changeColorClass = isPositive
+                          ? "text-green-600"
+                          : isNegative
+                          ? "text-red-600"
+                          : "text-gray-600";
+
+                        return (
+                          <TableRow key={instKey}>
+                            <TableCell className="font-medium">
+                              {instLabel}
+                            </TableCell>
+                            <TableCell>{data.opening.toFixed(2)}</TableCell>
+                            <TableCell>{data.highest.toFixed(2)}</TableCell>
+                            <TableCell>{data.lowest.toFixed(2)}</TableCell>
+                            <TableCell>{data.closing.toFixed(2)}</TableCell>
+                            <TableCell className={changeColorClass}>
+                              {isPositive ? "+" : ""}
+                              {changeValue.toFixed(2)} ({isPositive ? "+" : ""}
+                              {changePercent.toFixed(2)}%)
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+            </TabsContent>
+          );
+        })}
+      </Tabs>
+    </div>
+  );
+}
+
 export default function TradingView(): JSX.Element {
   const [interval, setInterval] = useState<Interval>("day");
   const [instrument, setInstrument] = useState<string>(INSTRUMENTS[0].key);
   const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
   const [wsStatus, setWsStatus] = useState<boolean>(false);
 
+  useEffect(() => {
+    console.log("Current instrument:", instrument);
+    console.log("Is All Stocks selected:", instrument === "all");
+  }, [instrument]);
+
   const handleFilterInstrument = (instrumentKey: string): void => {
+    console.log("Setting instrument to:", instrumentKey);
     setInstrument(instrumentKey);
   };
 
   const handleGlobalRefresh = (): void => {
+    console.log("Refreshing data...");
     setRefreshTrigger((prev) => prev + 1);
+  };
+
+  const showAllStocks = (): void => {
+    console.log("Switching to All Stocks View");
+    setInstrument("all");
   };
 
   // Find the current instrument label for initializing the search field
   const currentInstrumentLabel =
-    INSTRUMENTS.find((inst) => inst.key === instrument)?.label || "";
+    instrument === "all"
+      ? "All Stocks"
+      : INSTRUMENTS.find((inst) => inst.key === instrument)?.label || "";
 
   const timeframes: { title: string; id: Timeframe }[] = [
-    { title: "Real-Time", id: "realTime" },
+    { title: "Today", id: "currentDay" },
     { title: "Previous Day", id: "previousDay" },
     { title: "3-Day OHLC", id: "threeDays" },
     { title: "Current Week", id: "currentWeek" },
@@ -676,15 +1250,11 @@ export default function TradingView(): JSX.Element {
     { title: "Previous Year", id: "previousYear" },
   ];
 
-  return (
-    <div className="space-y-8">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {/* Search filter component */}
-        <SearchFilter
-          onFilter={handleFilterInstrument}
-          initialValue={currentInstrumentLabel}
-        />
+  const isAllStocks = instrument === "all";
 
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <div>
           <label className="block text-sm font-medium mb-2">
             Select Instrument
@@ -694,6 +1264,7 @@ export default function TradingView(): JSX.Element {
               <SelectValue placeholder="Select instrument" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="all">All Stocks</SelectItem>
               {INSTRUMENTS.map((inst) => (
                 <SelectItem key={inst.key} value={inst.key}>
                   {inst.label}
@@ -724,32 +1295,445 @@ export default function TradingView(): JSX.Element {
 
         <div className="flex items-end">
           <Button onClick={handleGlobalRefresh} className="w-full">
-            Refresh All Data
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Refresh Data
+          </Button>
+        </div>
+
+        <div className="flex items-end">
+          <Button
+            onClick={showAllStocks}
+            className="w-full"
+            variant={isAllStocks ? "default" : "outline"}
+          >
+            View All Stocks
           </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {/* Real-time data as the first card */}
-        <RealTimeCard instrument={instrument} wsStatus={wsStatus} />
-
-        {/* Display all other timeframe cards except real-time which is handled separately */}
-        {timeframes
-          .filter((tf) => tf.id !== "realTime")
-          .map((tf) => (
-            <TimeframeCard
-              key={`${tf.id}-${refreshTrigger}`}
-              title={tf.title}
-              timeframe={tf.id}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-xl">
+            {instrument === "all"
+              ? "OHLC Data for All Stocks"
+              : `OHLC Data for ${currentInstrumentLabel}`}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isAllStocks ? (
+            <AllStocksTable
+              instruments={INSTRUMENTS}
+              interval={interval}
+              refreshTrigger={refreshTrigger}
+              timeframes={timeframes}
+            />
+          ) : (
+            <SingleStockTable
               instrument={instrument}
               interval={interval}
               refreshTrigger={refreshTrigger}
-              onRefresh={handleGlobalRefresh}
+              timeframes={timeframes}
             />
-          ))}
-      </div>
-
-      <DebugPanel />
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
+}
+
+// Table for a single stock showing all timeframes
+function SingleStockTable({
+  instrument,
+  interval,
+  refreshTrigger,
+  timeframes,
+}: {
+  instrument: string;
+  interval: Interval;
+  refreshTrigger: number;
+  timeframes: { title: string; id: Timeframe }[];
+}): JSX.Element {
+  const [data, setData] = useState<Record<string, StatsData | null>>({});
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch data for all timeframes
+  useEffect(() => {
+    const fetchAllData = async () => {
+      setIsLoading(true);
+      const newData: Record<string, StatsData | null> = {};
+
+      // Fetch data for each timeframe
+      for (const tf of timeframes) {
+        try {
+          const data = await fetchTimeframeData(tf.id, instrument, interval);
+          newData[tf.id] = data;
+        } catch (err) {
+          console.error(`Error fetching data for ${tf.title}:`, err);
+          newData[tf.id] = null;
+        }
+      }
+
+      setData(newData);
+      setIsLoading(false);
+    };
+
+    fetchAllData();
+  }, [instrument, interval, refreshTrigger, timeframes]);
+
+  if (isLoading) {
+    return (
+      <div className="text-center py-8">
+        <RefreshCw className="h-6 w-6 animate-spin text-gray-400 mx-auto mb-2" />
+        <p>Loading OHLC data...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return <div className="text-center text-red-500 py-8">{error}</div>;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-[180px]">Time Frame</TableHead>
+            <TableHead>Open</TableHead>
+            <TableHead>High</TableHead>
+            <TableHead>Low</TableHead>
+            <TableHead>Close</TableHead>
+            <TableHead>Change</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {timeframes.map((tf) => {
+            const tfData = data[tf.id];
+
+            if (!tfData) {
+              return (
+                <TableRow key={tf.id}>
+                  <TableCell className="font-medium">{tf.title}</TableCell>
+                  <TableCell colSpan={5} className="text-gray-500">
+                    No data available
+                  </TableCell>
+                </TableRow>
+              );
+            }
+
+            const change = tfData.closing - tfData.opening;
+            const percentChange = (change / tfData.opening) * 100;
+            const isPositive = change > 0;
+            const isNegative = change < 0;
+            const changeColorClass = isPositive
+              ? "text-green-600"
+              : isNegative
+              ? "text-red-600"
+              : "text-gray-600";
+
+            return (
+              <TableRow key={tf.id}>
+                <TableCell className="font-medium">{tf.title}</TableCell>
+                <TableCell>{tfData.opening.toFixed(2)}</TableCell>
+                <TableCell>{tfData.highest.toFixed(2)}</TableCell>
+                <TableCell>{tfData.lowest.toFixed(2)}</TableCell>
+                <TableCell>{tfData.closing.toFixed(2)}</TableCell>
+                <TableCell className={changeColorClass}>
+                  {isPositive ? "+" : ""}
+                  {change.toFixed(2)} ({isPositive ? "+" : ""}
+                  {percentChange.toFixed(2)}%)
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+// Table for all stocks showing data for a specific timeframe
+function AllStocksTable({
+  instruments,
+  interval,
+  refreshTrigger,
+  timeframes,
+}: {
+  instruments: { key: string; label: string }[];
+  interval: Interval;
+  refreshTrigger: number;
+  timeframes: { title: string; id: Timeframe }[];
+}): JSX.Element {
+  const [selectedTimeframe, setSelectedTimeframe] =
+    useState<Timeframe>("previousDay");
+  const [stocksData, setStocksData] = useState<
+    Record<string, StatsData | null>
+  >({});
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Get timeframe title
+  const timeframeTitle =
+    timeframes.find((tf) => tf.id === selectedTimeframe)?.title || "";
+
+  // Fetch data for the selected timeframe for all stocks
+  useEffect(() => {
+    const fetchStocksData = async () => {
+      setIsLoading(true);
+      const newData: Record<string, StatsData | null> = {};
+
+      // Fetch data for each instrument
+      for (const inst of instruments) {
+        try {
+          const data = await fetchTimeframeData(
+            selectedTimeframe,
+            inst.key,
+            interval
+          );
+          newData[inst.key] = data;
+        } catch (err) {
+          console.error(`Error fetching data for ${inst.label}:`, err);
+          newData[inst.key] = null;
+        }
+      }
+
+      setStocksData(newData);
+      setIsLoading(false);
+    };
+
+    fetchStocksData();
+  }, [instruments, interval, refreshTrigger, selectedTimeframe]);
+
+  if (isLoading) {
+    return (
+      <div className="text-center py-8">
+        <RefreshCw className="h-6 w-6 animate-spin text-gray-400 mx-auto mb-2" />
+        <p>Loading data for {timeframeTitle}...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return <div className="text-center text-red-500 py-8">{error}</div>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 mb-4">
+        {timeframes.map((tf) => (
+          <Button
+            key={tf.id}
+            variant={selectedTimeframe === tf.id ? "default" : "outline"}
+            size="sm"
+            onClick={() => setSelectedTimeframe(tf.id)}
+          >
+            {tf.title}
+          </Button>
+        ))}
+      </div>
+
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-[200px]">Instrument</TableHead>
+              <TableHead>Open</TableHead>
+              <TableHead>High</TableHead>
+              <TableHead>Low</TableHead>
+              <TableHead>Close</TableHead>
+              <TableHead>Change</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {instruments.map((inst) => {
+              const data = stocksData[inst.key];
+
+              if (!data) {
+                return (
+                  <TableRow key={inst.key}>
+                    <TableCell className="font-medium">{inst.label}</TableCell>
+                    <TableCell colSpan={5} className="text-gray-500">
+                      No data available
+                    </TableCell>
+                  </TableRow>
+                );
+              }
+
+              const change = data.closing - data.opening;
+              const percentChange = (change / data.opening) * 100;
+              const isPositive = change > 0;
+              const isNegative = change < 0;
+              const changeColorClass = isPositive
+                ? "text-green-600"
+                : isNegative
+                ? "text-red-600"
+                : "text-gray-600";
+
+              return (
+                <TableRow key={inst.key}>
+                  <TableCell className="font-medium">{inst.label}</TableCell>
+                  <TableCell>{data.opening.toFixed(2)}</TableCell>
+                  <TableCell>{data.highest.toFixed(2)}</TableCell>
+                  <TableCell>{data.lowest.toFixed(2)}</TableCell>
+                  <TableCell>{data.closing.toFixed(2)}</TableCell>
+                  <TableCell className={changeColorClass}>
+                    {isPositive ? "+" : ""}
+                    {change.toFixed(2)} ({isPositive ? "+" : ""}
+                    {percentChange.toFixed(2)}%)
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+async function fetchTimeframeData(
+  timeframe: Timeframe,
+  instrumentKey: string,
+  interval: Interval
+): Promise<StatsData | null> {
+  try {
+    const { fromDate, toDate } = getDateRangeForTimeframe(timeframe);
+
+    // The API expects dates in format: to_date/from_date
+    const formattedFromDate = format(fromDate, "yyyy-MM-dd");
+    const formattedToDate = format(toDate, "yyyy-MM-dd");
+
+    const response = await fetch(
+      `/api/historical-data?instrument=${encodeURIComponent(
+        instrumentKey
+      )}&interval=${interval}&to_date=${formattedToDate}&from_date=${formattedFromDate}`
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! Status: ${response.status}`);
+    }
+
+    const result: APIResponse = await response.json();
+
+    if (
+      result.status === "success" &&
+      result.data.candles &&
+      result.data.candles.length > 0
+    ) {
+      const candles = result.data.candles.map(transformCandle);
+
+      // Sort candles by timestamp in descending order (newest first)
+      candles.sort(
+        (a, b) =>
+          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+
+      return {
+        // Opening price is the first candle's open (earliest date)
+        opening: candles[candles.length - 1].open,
+        // Closing price is the last candle's close (latest date)
+        closing: candles[0].close,
+        // Highest is max of all high prices in timeframe
+        highest: Math.max(...candles.map((d) => d.high)),
+        // Lowest is min of all low prices in timeframe
+        lowest: Math.min(...candles.map((d) => d.low)),
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error(
+      `Error fetching data for ${timeframe} (${instrumentKey}):`,
+      error
+    );
+    return null;
+  }
+}
+
+function getDateRangeForTimeframe(timeframe: Timeframe): {
+  fromDate: Date;
+  toDate: Date;
+} {
+  const today = new Date();
+  let fromDate: Date;
+  let toDate: Date = today;
+
+  switch (timeframe) {
+    case "currentDay":
+      // For current day, set fromDate to start of today
+      fromDate = new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate()
+      );
+      break;
+    case "previousDay":
+      // For previous day, set both from and to date to yesterday
+      fromDate = subDays(today, 1);
+      toDate = subDays(today, 1);
+      break;
+    case "threeDays":
+      // Last 3 days including today
+      fromDate = subDays(today, 2);
+      break;
+    case "currentWeek":
+      // From Monday of current week to today
+      fromDate = startOfWeek(today, { weekStartsOn: 1 }); // Monday
+      break;
+    case "previousWeek":
+      // Previous full week (Monday to Friday)
+      const lastWeekStart = startOfWeek(subDays(today, 7), {
+        weekStartsOn: 1,
+      });
+      fromDate = lastWeekStart;
+      toDate = endOfWeek(lastWeekStart, { weekStartsOn: 1 });
+      break;
+    case "currentMonth":
+      // From 1st of current month to today
+      fromDate = startOfMonth(today);
+      break;
+    case "previousMonth":
+      // Full previous month
+      const lastMonth = subMonths(today, 1);
+      fromDate = startOfMonth(lastMonth);
+      toDate = endOfMonth(lastMonth);
+      break;
+    case "currentQuarter":
+      // Current quarter (Q1: Jan-Mar, Q2: Apr-Jun, Q3: Jul-Sep, Q4: Oct-Dec)
+      const currentMonth = today.getMonth();
+      const quarterStartMonth = Math.floor(currentMonth / 3) * 3;
+      fromDate = new Date(today.getFullYear(), quarterStartMonth, 1);
+      break;
+    case "previousQuarter":
+      // Previous quarter
+      const currentQuarter = Math.floor(today.getMonth() / 3);
+      let prevQuarter, prevQuarterYear;
+
+      if (currentQuarter === 0) {
+        prevQuarter = 3; // Q4
+        prevQuarterYear = today.getFullYear() - 1;
+      } else {
+        prevQuarter = currentQuarter - 1;
+        prevQuarterYear = today.getFullYear();
+      }
+
+      const prevQuarterStartMonth = prevQuarter * 3;
+      fromDate = new Date(prevQuarterYear, prevQuarterStartMonth, 1);
+      toDate = new Date(prevQuarterYear, prevQuarterStartMonth + 3, 0);
+      break;
+    case "currentYear":
+      // From January 1st of current year to today
+      fromDate = new Date(today.getFullYear(), 0, 1);
+      break;
+    case "previousYear":
+      // Full previous year (Jan 1 to Dec 31)
+      fromDate = new Date(today.getFullYear() - 1, 0, 1);
+      toDate = new Date(today.getFullYear() - 1, 11, 31);
+      break;
+    default:
+      fromDate = subDays(today, 7); // Default to 7 days
+  }
+
+  return { fromDate, toDate };
 }
