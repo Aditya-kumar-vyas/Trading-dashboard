@@ -80,7 +80,9 @@ interface TimeframeTableProps {
 }
 
 // Constants
-const CACHE_EXPIRY_TIME = 5 * 60 * 1000; // 5 minutes
+const CACHE_EXPIRY_TIME = 5 * 60 * 1000; // 5 minutes for memory cache
+const LOCALSTORAGE_EXPIRY_TIME = 60 * 60 * 1000; // 1 hour for localStorage cache
+const LOCALSTORAGE_KEY_PREFIX = "timeframe_data_";
 const MAX_RETRIES = 3;
 const BASE_DELAY = 1000; // 1 second
 const MAX_CONCURRENT_REQUESTS = 2;
@@ -119,7 +121,7 @@ export default function TimeframeTable({
   >({});
   const [sortColumn, setSortColumn] = useState<string>("label");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
-  const { isConnected, marketData } = useMarketData();
+  const { isConnected, marketData, subscribeToInstruments } = useMarketData();
 
   // Add loading progress state with more details
   const [loadingProgress, setLoadingProgress] = useState<{
@@ -310,6 +312,72 @@ export default function TimeframeTable({
           : b.label.localeCompare(a.label);
       }
 
+      // For Today timeframe, try to use real-time data for sorting if available
+      if (selectedTimeframe === "currentDay") {
+        const rtDataA = getRealTimeData(a.key);
+        const rtDataB = getRealTimeData(b.key);
+
+        // If both have real-time data, use it for sorting
+        if (rtDataA?.dailyOHLC && rtDataB?.dailyOHLC) {
+          let compareValue = 0;
+
+          // Sort based on the selected column
+          switch (sortColumn) {
+            case "open":
+              compareValue =
+                parseFloat(rtDataA.dailyOHLC.open) -
+                parseFloat(rtDataB.dailyOHLC.open);
+              break;
+            case "high":
+              compareValue =
+                parseFloat(rtDataA.dailyOHLC.high) -
+                parseFloat(rtDataB.dailyOHLC.high);
+              break;
+            case "low":
+              compareValue =
+                parseFloat(rtDataA.dailyOHLC.low) -
+                parseFloat(rtDataB.dailyOHLC.low);
+              break;
+            case "close":
+              compareValue =
+                (rtDataA.lastPrice || parseFloat(rtDataA.dailyOHLC.close)) -
+                (rtDataB.lastPrice || parseFloat(rtDataB.dailyOHLC.close));
+              break;
+            case "change":
+              const openA = parseFloat(rtDataA.dailyOHLC.open);
+              const closeA =
+                rtDataA.lastPrice || parseFloat(rtDataA.dailyOHLC.close);
+              const openB = parseFloat(rtDataB.dailyOHLC.open);
+              const closeB =
+                rtDataB.lastPrice || parseFloat(rtDataB.dailyOHLC.close);
+
+              compareValue = closeA - openA - (closeB - openB);
+              break;
+            case "changePercent":
+              const openPercentA = parseFloat(rtDataA.dailyOHLC.open);
+              const closePercentA =
+                rtDataA.lastPrice || parseFloat(rtDataA.dailyOHLC.close);
+              const openPercentB = parseFloat(rtDataB.dailyOHLC.open);
+              const closePercentB =
+                rtDataB.lastPrice || parseFloat(rtDataB.dailyOHLC.close);
+
+              const percentChangeA =
+                ((closePercentA - openPercentA) / openPercentA) * 100;
+              const percentChangeB =
+                ((closePercentB - openPercentB) / openPercentB) * 100;
+
+              compareValue = percentChangeA - percentChangeB;
+              break;
+            default:
+              compareValue = 0;
+          }
+
+          // Apply direction
+          return sortDirection === "asc" ? compareValue : -compareValue;
+        }
+      }
+
+      // Fall back to the original sorting logic if real-time data isn't available
       // Check if we have data for both stocks
       const hasDataA =
         allStocksData[a.key] && allStocksData[a.key][selectedTimeframe];
@@ -453,7 +521,7 @@ export default function TimeframeTable({
     return Boolean(key) && key !== "#N/A" && !key.includes("#N/A");
   };
 
-  // Change fetchTimeframeData to support batching multiple timeframes in a single request
+  // Enhanced fetchTimeframeData with localStorage caching
   const fetchTimeframeData = async (
     timeframe: Timeframe,
     instrumentKey: string,
@@ -467,12 +535,40 @@ export default function TimeframeTable({
       return null;
     }
 
-    try {
-      const { fromDate, toDate } = getDateRangeForTimeframe(timeframe);
+    // Generate a cache key for localStorage
+    const { fromDate, toDate } = getDateRangeForTimeframe(timeframe);
+    const formattedFromDate = format(fromDate, "yyyy-MM-dd");
+    const formattedToDate = format(toDate, "yyyy-MM-dd");
+    const localStorageCacheKey = `${LOCALSTORAGE_KEY_PREFIX}${instrumentKey}_${timeframe}_${interval}_${formattedFromDate}_${formattedToDate}`;
 
-      // The API expects dates in format: to_date/from_date
-      const formattedFromDate = format(fromDate, "yyyy-MM-dd");
-      const formattedToDate = format(toDate, "yyyy-MM-dd");
+    try {
+      // First check localStorage cache
+      const cachedData = localStorage.getItem(localStorageCacheKey);
+
+      if (cachedData) {
+        try {
+          const parsedCache = JSON.parse(cachedData);
+          // Check if the cache is still valid
+          if (Date.now() - parsedCache.timestamp < LOCALSTORAGE_EXPIRY_TIME) {
+            console.log(
+              `Using localStorage cache for ${instrumentKey} (${timeframe})`
+            );
+
+            // Update progress
+            setLoadingProgress((prev) => ({
+              ...prev,
+              current: prev.current + 1,
+              message: `Loaded from cache: ${instrumentKey} (${timeframe})`,
+              lastUpdated: Date.now(),
+            }));
+
+            return parsedCache.data;
+          }
+        } catch (e) {
+          console.warn("Error parsing cached data:", e);
+          // Continue with API call if cache parsing fails
+        }
+      }
 
       // Update progress message
       setLoadingProgress((prev) => ({
@@ -484,6 +580,7 @@ export default function TimeframeTable({
         lastUpdated: Date.now(),
       }));
 
+      // The API expects dates in format: to_date/from_date
       const response = await fetch(
         `/api/historical-data?instrument=${encodeURIComponent(
           instrumentKey
@@ -525,6 +622,21 @@ export default function TimeframeTable({
           lowest: Math.min(...candles.map((d) => d.low)),
         };
 
+        // Store in localStorage
+        try {
+          localStorage.setItem(
+            localStorageCacheKey,
+            JSON.stringify({
+              timestamp: Date.now(),
+              data,
+            })
+          );
+          console.log(`Cached ${instrumentKey} (${timeframe}) in localStorage`);
+        } catch (e) {
+          console.warn("Error storing data in localStorage:", e);
+          // Continue even if localStorage fails
+        }
+
         // Update progress
         setLoadingProgress((prev) => ({
           ...prev,
@@ -554,7 +666,7 @@ export default function TimeframeTable({
     }
   };
 
-  // Add a new batched fetching function for multiple timeframes
+  // Update fetchMultipleTimeframes with localStorage caching
   const fetchMultipleTimeframes = async (
     instrumentKey: string,
     timeframeIds: Timeframe[]
@@ -581,9 +693,57 @@ export default function TimeframeTable({
       StatsData | null
     >;
 
+    // Track which timeframes we need to fetch from API
+    const timeframesToFetch: Timeframe[] = [];
+
     try {
+      // First try to get data from localStorage for each timeframe
+      for (const tfId of timeframeIds) {
+        const { fromDate, toDate } = getDateRangeForTimeframe(tfId);
+        const formattedFromDate = format(fromDate, "yyyy-MM-dd");
+        const formattedToDate = format(toDate, "yyyy-MM-dd");
+        const localStorageCacheKey = `${LOCALSTORAGE_KEY_PREFIX}${instrumentKey}_${tfId}_${interval}_${formattedFromDate}_${formattedToDate}`;
+
+        const cachedData = localStorage.getItem(localStorageCacheKey);
+
+        if (cachedData) {
+          try {
+            const parsedCache = JSON.parse(cachedData);
+            if (Date.now() - parsedCache.timestamp < LOCALSTORAGE_EXPIRY_TIME) {
+              // Use cached data
+              timeframeResults[tfId] = parsedCache.data;
+
+              // Update progress
+              setLoadingProgress((prev) => ({
+                ...prev,
+                current: prev.current + 1,
+                message: `Loaded from cache: ${instrumentKey} (${tfId})`,
+                lastUpdated: Date.now(),
+              }));
+
+              continue; // Skip API fetch for this timeframe
+            }
+          } catch (e) {
+            console.warn("Error parsing cached data:", e);
+          }
+        }
+
+        // If we reach here, we need to fetch this timeframe
+        timeframesToFetch.push(tfId);
+      }
+
+      // If all timeframes were cached, return early
+      if (timeframesToFetch.length === 0) {
+        console.log(`All timeframes for ${instrumentKey} loaded from cache`);
+        return timeframeResults;
+      }
+
+      console.log(
+        `Fetching ${timeframesToFetch.length} timeframes for ${instrumentKey} from API`
+      );
+
       // First handle "previousDay" specially if it's in the requested timeframes
-      if (timeframeIds.includes("previousDay")) {
+      if (timeframesToFetch.includes("previousDay")) {
         try {
           // Update progress message for previousDay special handling
           setLoadingProgress((prev) => ({
@@ -610,13 +770,37 @@ export default function TimeframeTable({
               const candles = result.data.candles.map(transformCandle);
 
               // Set the previousDay data from the last trading day
-              timeframeResults["previousDay"] = {
+              const previousDayData = {
                 opening: candles[0].open,
                 closing: candles[0].close,
                 highest: candles[0].high,
                 lowest: candles[0].low,
                 date: result.lastTradingDate,
               };
+
+              timeframeResults["previousDay"] = previousDayData;
+
+              // Cache in localStorage
+              try {
+                const { fromDate, toDate } =
+                  getDateRangeForTimeframe("previousDay");
+                const formattedFromDate = format(fromDate, "yyyy-MM-dd");
+                const formattedToDate = format(toDate, "yyyy-MM-dd");
+                const localStorageCacheKey = `${LOCALSTORAGE_KEY_PREFIX}${instrumentKey}_previousDay_${interval}_${formattedFromDate}_${formattedToDate}`;
+
+                localStorage.setItem(
+                  localStorageCacheKey,
+                  JSON.stringify({
+                    timestamp: Date.now(),
+                    data: previousDayData,
+                  })
+                );
+              } catch (e) {
+                console.warn(
+                  "Error storing previousDay data in localStorage:",
+                  e
+                );
+              }
 
               // Update progress
               setLoadingProgress((prev) => ({
@@ -661,7 +845,7 @@ export default function TimeframeTable({
         }
 
         // Remove previousDay from the timeframes to fetch in the batch request
-        const remainingTimeframes = timeframeIds.filter(
+        const remainingTimeframes = timeframesToFetch.filter(
           (tf) => tf !== "previousDay"
         );
 
@@ -671,7 +855,8 @@ export default function TimeframeTable({
         }
 
         // Continue with the remaining timeframes
-        timeframeIds = remainingTimeframes;
+        timeframesToFetch.length = 0;
+        timeframesToFetch.push(...remainingTimeframes);
       }
 
       // Find the date range that covers all requested timeframes
@@ -679,7 +864,7 @@ export default function TimeframeTable({
       let globalToDate = new Date(0); // Start with earliest possible date
 
       // First determine the global date range needed
-      timeframeIds.forEach((timeframe) => {
+      timeframesToFetch.forEach((timeframe) => {
         const { fromDate, toDate } = getDateRangeForTimeframe(timeframe);
         if (fromDate < globalFromDate) {
           globalFromDate = fromDate;
@@ -696,7 +881,7 @@ export default function TimeframeTable({
       // Update progress message for batch request
       setLoadingProgress((prev) => ({
         ...prev,
-        message: `Batch fetching ${timeframeIds.length} timeframes for ${
+        message: `Batch fetching ${timeframesToFetch.length} timeframes for ${
           INSTRUMENTS.find((inst) => inst.key === instrumentKey)?.label ||
           instrumentKey
         }`,
@@ -735,7 +920,7 @@ export default function TimeframeTable({
         );
 
         // Process each timeframe using the same dataset
-        timeframeIds.forEach((tfId) => {
+        timeframesToFetch.forEach((tfId) => {
           const { fromDate, toDate } = getDateRangeForTimeframe(tfId);
 
           // Filter candles for this specific timeframe
@@ -745,12 +930,32 @@ export default function TimeframeTable({
           });
 
           if (timeframeCandles.length > 0) {
-            timeframeResults[tfId] = {
+            const tfData = {
               opening: timeframeCandles[0].open,
               closing: timeframeCandles[timeframeCandles.length - 1].close,
               highest: Math.max(...timeframeCandles.map((d) => d.high)),
               lowest: Math.min(...timeframeCandles.map((d) => d.low)),
             };
+
+            timeframeResults[tfId] = tfData;
+
+            // Cache in localStorage
+            try {
+              const localStorageCacheKey = `${LOCALSTORAGE_KEY_PREFIX}${instrumentKey}_${tfId}_${interval}_${format(
+                fromDate,
+                "yyyy-MM-dd"
+              )}_${format(toDate, "yyyy-MM-dd")}`;
+
+              localStorage.setItem(
+                localStorageCacheKey,
+                JSON.stringify({
+                  timestamp: Date.now(),
+                  data: tfData,
+                })
+              );
+            } catch (e) {
+              console.warn(`Error storing ${tfId} data in localStorage:`, e);
+            }
           } else {
             timeframeResults[tfId] = null;
           }
@@ -764,7 +969,7 @@ export default function TimeframeTable({
         });
       } else {
         // No data, set all timeframes to null
-        timeframeIds.forEach((tfId) => {
+        timeframesToFetch.forEach((tfId) => {
           timeframeResults[tfId] = null;
 
           // Update progress even for empty results
@@ -781,7 +986,7 @@ export default function TimeframeTable({
       console.error(`Error in batch fetch for ${instrumentKey}:`, error);
 
       // On error, set all remaining timeframes to null
-      timeframeIds.forEach((tfId) => {
+      timeframesToFetch.forEach((tfId) => {
         if (!timeframeResults[tfId]) {
           timeframeResults[tfId] = null;
         }
@@ -840,6 +1045,8 @@ export default function TimeframeTable({
         },
         ...indexStocks,
       ].filter((inst) => isValidInstrument(inst.key));
+
+      console.log("All instruments to fetch:", allInstruments);
 
       // Get all timeframe IDs
       const allTimeframeIds = timeframes.map((tf) => tf.id);
@@ -909,9 +1116,18 @@ export default function TimeframeTable({
   }, [isLoading, loadingProgress.lastUpdated]);
 
   // Calculate change data for display
-  const calculateChangeData = (data: StatsData) => {
-    const changeValue = data.closing - data.opening;
-    const changePercent = (changeValue / data.opening) * 100;
+  const calculateChangeData = (
+    data: StatsData,
+    previousDayClose?: number | null
+  ) => {
+    // Use previousDayClose if provided, otherwise fallback to opening price
+    const baseValue =
+      previousDayClose !== undefined && previousDayClose !== null
+        ? previousDayClose
+        : data.opening;
+
+    const changeValue = data.closing - baseValue;
+    const changePercent = (changeValue / baseValue) * 100;
 
     return { changeValue, changePercent };
   };
@@ -935,10 +1151,101 @@ export default function TimeframeTable({
     showAllStocks,
   ]);
 
-  // Handle refresh button click
-  const handleRefresh = () => {
-    // Clear cache on manual refresh
-    dataCache.current = {};
+  // Update useEffect to better handle instrument subscription
+  useEffect(() => {
+    if (isConnected && indexStocks.length > 0) {
+      // Get all valid stock keys including the main instrument
+      const allInstrumentKeys = [
+        instrument,
+        ...indexStocks.map((stock: { key: string }) => stock.key),
+      ].filter(isValidInstrument);
+
+      console.log(
+        `Attempting to subscribe to ${
+          allInstrumentKeys.length
+        } instruments for ${
+          INSTRUMENTS.find((i) => i.key === instrument)?.label || "index"
+        }`
+      );
+
+      // Subscribe to all instruments with proper formatting
+      if (allInstrumentKeys.length > 0) {
+        // Format the keys for subscription - add NSE_EQ| prefix if needed
+        const formattedKeys = allInstrumentKeys.map((key) => {
+          // Only add prefix if it doesn't already have a format identifier
+          if (!key.includes("|") && !key.includes("_INDEX")) {
+            return `NSE_EQ|${key}`;
+          }
+          return key;
+        });
+
+        console.log("Subscribing to all index stocks with formatted keys");
+        subscribeToInstruments(formattedKeys);
+      }
+    }
+  }, [isConnected, instrument, indexStocks, subscribeToInstruments]);
+
+  // Add a debug effect to log real-time data availability
+  useEffect(() => {
+    if (isConnected && showAllStocks) {
+      // Count how many stocks have real-time data
+      const stocksWithRealTimeData = indexStocks.filter(
+        (stock) => marketData[stock.key] || marketData[`NSE_EQ|${stock.key}`]
+      );
+
+      if (stocksWithRealTimeData.length > 0) {
+        console.log(
+          `Real-time data available for ${stocksWithRealTimeData.length}/${indexStocks.length} stocks`
+        );
+      }
+    }
+  }, [isConnected, marketData, indexStocks, showAllStocks]);
+
+  // Helper function to check if real-time data is available for a stock
+  const hasRealTimeData = (stockKey: string): boolean => {
+    // Check both with and without NSE_EQ| prefix
+    return Boolean(
+      (isConnected && marketData[stockKey]?.dailyOHLC) ||
+        (isConnected && marketData[`NSE_EQ|${stockKey}`]?.dailyOHLC)
+    );
+  };
+
+  // Helper function to get real-time data for a stock
+  const getRealTimeData = (stockKey: string): any => {
+    // Try both with and without NSE_EQ| prefix
+    return marketData[stockKey] || marketData[`NSE_EQ|${stockKey}`] || null;
+  };
+
+  // Update handleRefresh to optionally clear cache
+  const handleRefresh = (clearCache = false) => {
+    // Clear cache on manual refresh if requested
+    if (clearCache) {
+      // Clear memory cache
+      dataCache.current = {};
+
+      // Clear localStorage cache selectively (only for the current instrument)
+      if (typeof window !== "undefined") {
+        const keysToRemove: string[] = [];
+
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (
+            key &&
+            key.startsWith(LOCALSTORAGE_KEY_PREFIX) &&
+            (key.includes(instrument) ||
+              (showAllStocks &&
+                indexStocks.some((stock) => key.includes(stock.key))))
+          ) {
+            keysToRemove.push(key);
+          }
+        }
+
+        keysToRemove.forEach((key) => localStorage.removeItem(key));
+        console.log(
+          `Cleared ${keysToRemove.length} cached items from localStorage`
+        );
+      }
+    }
 
     if (showAllStocks) {
       loadAllStocksData();
@@ -1019,14 +1326,32 @@ export default function TimeframeTable({
       INSTRUMENTS.find((inst) => inst.key === instrument)?.label ||
       "Selected Stock";
 
+    // Get previous day's closing price if available
+    const previousDayData = singleStockData["previousDay"];
+    const previousDayClose = previousDayData?.closing;
+
     return (
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Timeframe Data for {instrumentLabel}</CardTitle>
-          <Button variant="outline" size="sm" onClick={handleRefresh}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleRefresh(true)}
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh (Clear Cache)
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleRefresh(false)}
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -1043,6 +1368,54 @@ export default function TimeframeTable({
               </TableHeader>
               <TableBody>
                 {timeframes.map((tf) => {
+                  // Special handling for "Today" timeframe - use real-time data if available
+                  if (tf.id === "currentDay" && hasRealTimeData(instrument)) {
+                    const rtData = getRealTimeData(instrument);
+                    const dailyOHLC = rtData.dailyOHLC;
+
+                    const data: StatsData = {
+                      opening: parseFloat(dailyOHLC.open),
+                      highest: parseFloat(dailyOHLC.high),
+                      lowest: parseFloat(dailyOHLC.low),
+                      closing: rtData.lastPrice || parseFloat(dailyOHLC.close), // Use last price if available
+                    };
+
+                    const { changeValue, changePercent } = calculateChangeData(
+                      data,
+                      previousDayClose
+                    );
+                    const isPositive = changeValue > 0;
+                    const isNegative = changeValue < 0;
+                    const changeColorClass = isPositive
+                      ? "text-green-600 dark:text-green-400"
+                      : isNegative
+                      ? "text-red-600 dark:text-red-400"
+                      : "text-gray-600 dark:text-gray-400";
+
+                    return (
+                      <TableRow key={tf.id}>
+                        <TableCell className="font-medium">
+                          {tf.title}
+                          <Badge
+                            variant="outline"
+                            className="ml-2 text-green-500 border-green-500 text-xs"
+                          >
+                            Live
+                          </Badge>
+                        </TableCell>
+                        <TableCell>{data.opening.toFixed(2)}</TableCell>
+                        <TableCell>{data.highest.toFixed(2)}</TableCell>
+                        <TableCell>{data.lowest.toFixed(2)}</TableCell>
+                        <TableCell>{data.closing.toFixed(2)}</TableCell>
+                        <TableCell className={changeColorClass}>
+                          {isPositive ? "+" : ""}
+                          {changeValue.toFixed(2)} ({isPositive ? "+" : ""}
+                          {changePercent.toFixed(2)}%)
+                        </TableCell>
+                      </TableRow>
+                    );
+                  }
+
                   const data = singleStockData[tf.id];
 
                   if (!data) {
@@ -1058,8 +1431,10 @@ export default function TimeframeTable({
                     );
                   }
 
-                  const { changeValue, changePercent } =
-                    calculateChangeData(data);
+                  const { changeValue, changePercent } = calculateChangeData(
+                    data,
+                    previousDayClose
+                  );
                   const isPositive = changeValue > 0;
                   const isNegative = changeValue < 0;
                   const changeColorClass = isPositive
@@ -1109,10 +1484,57 @@ export default function TimeframeTable({
       INSTRUMENTS.find((inst) => inst.key === instrument)?.label || "Index";
 
     // Helper function to render cell with change data
-    const renderChangeCell = (data: StatsData | null) => {
+    const renderChangeCell = (
+      data: StatsData | null,
+      stockKey: string,
+      timeframeId: string
+    ) => {
+      // Get previous day's closing price if available
+      const previousDayData = allStocksData[stockKey]?.["previousDay"];
+      const previousDayClose = previousDayData?.closing;
+
+      // Use real-time data for Today timeframe if available
+      if (timeframeId === "currentDay") {
+        const rtData = getRealTimeData(stockKey);
+
+        if (rtData?.dailyOHLC) {
+          const dailyOHLC = rtData.dailyOHLC;
+
+          const realTimeData: StatsData = {
+            opening: parseFloat(dailyOHLC.open),
+            highest: parseFloat(dailyOHLC.high),
+            lowest: parseFloat(dailyOHLC.low),
+            closing: rtData.lastPrice || parseFloat(dailyOHLC.close), // Use last price if available
+          };
+
+          const { changeValue, changePercent } = calculateChangeData(
+            realTimeData,
+            previousDayClose
+          );
+          const isPositive = changeValue > 0;
+          const isNegative = changeValue < 0;
+          const changeColorClass = isPositive
+            ? "text-green-600 dark:text-green-400"
+            : isNegative
+            ? "text-red-600 dark:text-red-400"
+            : "text-gray-600 dark:text-gray-400";
+
+          return (
+            <span className={changeColorClass}>
+              {isPositive ? "+" : ""}
+              {changeValue.toFixed(2)} ({isPositive ? "+" : ""}
+              {changePercent.toFixed(2)}%)
+            </span>
+          );
+        }
+      }
+
       if (!data) return <span className="text-gray-500">-</span>;
 
-      const { changeValue, changePercent } = calculateChangeData(data);
+      const { changeValue, changePercent } = calculateChangeData(
+        data,
+        previousDayClose
+      );
       const isPositive = changeValue > 0;
       const isNegative = changeValue < 0;
       const changeColorClass = isPositive
@@ -1131,7 +1553,22 @@ export default function TimeframeTable({
     };
 
     // Helper function to render price cell
-    const renderPriceCell = (data: StatsData | null) => {
+    const renderPriceCell = (
+      data: StatsData | null,
+      stockKey: string,
+      timeframeId: string
+    ) => {
+      // Use real-time data for Today timeframe if available
+      if (timeframeId === "currentDay") {
+        const rtData = getRealTimeData(stockKey);
+
+        if (rtData?.lastPrice || rtData?.dailyOHLC) {
+          return rtData.lastPrice
+            ? rtData.lastPrice.toFixed(2)
+            : parseFloat(rtData.dailyOHLC.close).toFixed(2);
+        }
+      }
+
       if (!data) return <span className="text-gray-500">-</span>;
       return data.closing.toFixed(2);
     };
@@ -1146,10 +1583,24 @@ export default function TimeframeTable({
               timeframes
             </p>
           </div>
-          <Button variant="outline" size="sm" onClick={handleRefresh}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh All
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleRefresh(true)}
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh (Clear Cache)
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => handleRefresh(false)}
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -1177,6 +1628,14 @@ export default function TimeframeTable({
                         colSpan={2}
                       >
                         {tf.title}
+                        {tf.id === "currentDay" && isConnected && (
+                          <Badge
+                            variant="outline"
+                            className="ml-2 text-green-500 border-green-500 text-xs"
+                          >
+                            Live
+                          </Badge>
+                        )}
                       </TableHead>
                     </React.Fragment>
                   ))}
@@ -1203,6 +1662,14 @@ export default function TimeframeTable({
                   <TableRow className="bg-muted/20">
                     <TableCell className="font-bold sticky left-0 bg-muted/20 z-10">
                       {indexName} (Index)
+                      {hasRealTimeData(instrument) && (
+                        <Badge
+                          variant="outline"
+                          className="ml-2 text-green-500 border-green-500 text-xs"
+                        >
+                          Live
+                        </Badge>
+                      )}
                     </TableCell>
 
                     {/* Data for each timeframe */}
@@ -1211,9 +1678,11 @@ export default function TimeframeTable({
                       return (
                         <React.Fragment key={tf.id}>
                           <TableCell className="border-l bg-muted/10">
-                            {renderPriceCell(tfData)}
+                            {renderPriceCell(tfData, instrument, tf.id)}
                           </TableCell>
-                          <TableCell>{renderChangeCell(tfData)}</TableCell>
+                          <TableCell>
+                            {renderChangeCell(tfData, instrument, tf.id)}
+                          </TableCell>
                         </React.Fragment>
                       );
                     })}
@@ -1223,14 +1692,13 @@ export default function TimeframeTable({
                 {/* Stock rows */}
                 {sortedStocks.map((stock) => {
                   // For highlighting a row with live data
-                  const hasRealTimeData =
-                    isConnected && marketData[stock.key]?.dailyOHLC;
+                  const hasRtData = hasRealTimeData(stock.key);
 
                   return (
                     <TableRow key={stock.key}>
                       <TableCell className="font-medium sticky left-0 bg-background z-10">
                         {stock.label}
-                        {hasRealTimeData && (
+                        {hasRtData && (
                           <Badge
                             variant="outline"
                             className="ml-2 text-green-500 border-green-500 text-xs"
@@ -1246,9 +1714,11 @@ export default function TimeframeTable({
                         return (
                           <React.Fragment key={tf.id}>
                             <TableCell className="border-l bg-muted/5">
-                              {renderPriceCell(tfData)}
+                              {renderPriceCell(tfData, stock.key, tf.id)}
                             </TableCell>
-                            <TableCell>{renderChangeCell(tfData)}</TableCell>
+                            <TableCell>
+                              {renderChangeCell(tfData, stock.key, tf.id)}
+                            </TableCell>
                           </React.Fragment>
                         );
                       })}
