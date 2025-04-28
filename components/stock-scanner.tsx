@@ -292,7 +292,16 @@ const SCAN_TEMPLATES = [
   },
 ];
 
-export default function StockScanner() {
+// Add props interface for StockScanner
+interface StockScannerProps {
+  refreshTrigger?: number;
+  onRefresh?: () => void;
+}
+
+export default function StockScanner({
+  refreshTrigger,
+  onRefresh,
+}: StockScannerProps) {
   const { isConnected, marketData, subscribeToInstruments } = useMarketData();
 
   // State for conditions and segment

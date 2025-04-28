@@ -63,6 +63,9 @@ interface PivotCardProps {
   defaultPivotType?: PivotType;
   defaultTimeframe?: string;
   title?: string;
+  interval?: string;
+  refreshTrigger?: number;
+  instrument?: string;
 }
 
 export default function PivotCard({
@@ -71,6 +74,9 @@ export default function PivotCard({
   defaultPivotType = PivotType.STANDARD,
   defaultTimeframe = "daily",
   title = "Pivot Points",
+  interval,
+  refreshTrigger,
+  instrument,
 }: PivotCardProps): JSX.Element {
   const [pivotType, setPivotType] = useState<PivotType>(defaultPivotType);
   const [timeframe, setTimeframe] = useState<string>(defaultTimeframe);

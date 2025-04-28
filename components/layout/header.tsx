@@ -50,7 +50,7 @@ export function Header() {
           </Button>
 
           <Link
-            href="https://github.com/yourusername/ohlcv"
+            href="https://github.com/Aditya-kumar-vyas/Trading-dashboard"
             target="_blank"
             rel="noopener noreferrer"
           >

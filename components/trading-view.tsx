@@ -28,6 +28,7 @@ import TechnicalIndicatorCard from "./indicator-card";
 import PivotCard from "./pivot-grid";
 import StockScanner from "./stock-scanner";
 import TimeframeTable from "./timeframe-table";
+import TechnicalIndicatorsTable from "./technical-indicators-table";
 import { PivotType } from "../lib/indicator";
 import { INDEX_TO_STOCKS, getStocksForIndex } from "../app/indices-stocks";
 
@@ -198,20 +199,21 @@ export default function TradingView(): JSX.Element {
     try {
       // Default to 1 year of data for indicators
       const today = new Date();
-      const oneYearAgo = new Date();
-      oneYearAgo.setFullYear(today.getFullYear() - 1);
+      const lastYear = new Date();
+      lastYear.setFullYear(today.getFullYear() - 1);
 
+      // Format dates for API
       const formattedToDate = format(today, "yyyy-MM-dd");
-      const formattedFromDate = format(oneYearAgo, "yyyy-MM-dd");
+      const formattedFromDate = format(lastYear, "yyyy-MM-dd");
 
       const response = await fetch(
         `/api/historical-data?instrument=${encodeURIComponent(
           instrument
-        )}&interval=day&to_date=${formattedToDate}&from_date=${formattedFromDate}`
+        )}&interval=${interval}&to_date=${formattedToDate}&from_date=${formattedFromDate}`
       );
 
       if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
+        throw new Error("Failed to fetch historical data");
       }
 
       const result: APIResponse = await response.json();
@@ -222,19 +224,36 @@ export default function TradingView(): JSX.Element {
         result.data.candles.length > 0
       ) {
         const candles = result.data.candles.map(transformCandle);
-
-        // Sort candles by timestamp in ascending order (oldest first)
-        candles.sort(
-          (a, b) =>
-            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        );
-
         setCandleData(candles);
+      } else {
+        console.warn("No historical data available");
+        setCandleData([]);
       }
     } catch (error) {
-      console.error("Error fetching historical data for indicators:", error);
+      console.error("Error fetching historical data:", error);
+      setCandleData([]);
     }
   };
+
+  // Check if the current instrument is an index
+  const isInstrumentIndex = useMemo(() => {
+    return indexInstruments.some((indexInst) => indexInst.key === instrument);
+  }, [instrument, indexInstruments]);
+
+  // Watch for index changes to update tab selection if needed
+  useEffect(() => {
+    // If the user previously had the indicators tab selected but switched to a non-index
+    // we should switch them to another tab
+    if (activeTab === "indicators" && !isInstrumentIndex) {
+      setActiveTab("timeframes");
+    }
+  }, [activeTab, isInstrumentIndex]);
+
+  // Add this before the return statement
+  // Adjust the TabsList grid columns based on whether the indicators tab is available
+  const tabsGridCols = isInstrumentIndex
+    ? "grid-cols-2 md:grid-cols-5"
+    : "grid-cols-2 md:grid-cols-4";
 
   return (
     <div className="space-y-8 dark:bg-gray-900 dark:text-gray-100">
@@ -341,7 +360,10 @@ export default function TradingView(): JSX.Element {
           </Select>
         </div>
 
-        <div className="flex items-end">
+        <div>
+          <label className="block text-sm font-medium mb-2 dark:text-gray-300">
+            &nbsp;
+          </label>
           <Button
             onClick={handleGlobalRefresh}
             className="w-full dark:bg-blue-600 dark:hover:bg-blue-700 dark:text-white"
@@ -351,79 +373,19 @@ export default function TradingView(): JSX.Element {
         </div>
       </div>
 
-      <Tabs
-        value={activeTab}
-        onValueChange={setActiveTab}
-        className="space-y-4"
-      >
-        <TabsList className="dark:bg-gray-800">
-          <TabsTrigger
-            value="timeframes"
-            className="dark:data-[state=active]:bg-gray-700 dark:text-gray-300 dark:data-[state=active]:text-white"
-          >
-            OHLC Timeframes
-          </TabsTrigger>
-          <TabsTrigger
-            value="tableview"
-            className="dark:data-[state=active]:bg-gray-700 dark:text-gray-300 dark:data-[state=active]:text-white"
-          >
-            Table View
-          </TabsTrigger>
-          <TabsTrigger
-            value="indicators"
-            className="dark:data-[state=active]:bg-gray-700 dark:text-gray-300 dark:data-[state=active]:text-white"
-          >
-            Indicators
-          </TabsTrigger>
-          <TabsTrigger
-            value="pivots"
-            className="dark:data-[state=active]:bg-gray-700 dark:text-gray-300 dark:data-[state=active]:text-white"
-          >
-            Pivot Points
-          </TabsTrigger>
-          <TabsTrigger
-            value="breakouts"
-            className="dark:data-[state=active]:bg-gray-700 dark:text-gray-300 dark:data-[state=active]:text-white"
-          >
-            Breakouts
-          </TabsTrigger>
-          <TabsTrigger
-            value="scanner"
-            className="dark:data-[state=active]:bg-gray-700 dark:text-gray-300 dark:data-[state=active]:text-white"
-          >
-            Stock Scanner
-          </TabsTrigger>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className={`grid ${tabsGridCols} mb-4`}>
+          <TabsTrigger value="timeframes">Timeframes</TabsTrigger>
+          <TabsTrigger value="pivots">Pivots</TabsTrigger>
+          <TabsTrigger value="breakouts">Breakouts</TabsTrigger>
+          <TabsTrigger value="scanner">Scanner</TabsTrigger>
+          {isInstrumentIndex && (
+            <TabsTrigger value="indicators">Technical Indicators</TabsTrigger>
+          )}
         </TabsList>
 
-        <TabsContent value="timeframes" className="space-y-4">
-          {/* Morning Range Breakout Card - Added at the top for prominence */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <MorningRangeBreakoutCard
-              instrument={instrument}
-              // Using minute candles for more precise tracking
-              refreshTrigger={refreshTrigger}
-              onRefresh={handleGlobalRefresh}
-              title="Morning Range Breakout (9:15-10:00)"
-            />
-          </div>
-
-          {/* Regular Timeframe Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {timeframes.map((tf) => (
-              <TimeframeCard
-                key={`${tf.id}-${refreshTrigger}`}
-                title={tf.title}
-                timeframe={tf.id}
-                instrument={instrument}
-                interval={interval}
-                refreshTrigger={refreshTrigger}
-                onRefresh={handleGlobalRefresh}
-              />
-            ))}
-          </div>
-        </TabsContent>
-
-        <TabsContent value="tableview" className="space-y-4">
+        {/* Timeframes Tab Content */}
+        <TabsContent value="timeframes" className="mt-0">
           <TimeframeTable
             instrument={instrument}
             indexStocks={indexStocks}
@@ -433,185 +395,46 @@ export default function TradingView(): JSX.Element {
           />
         </TabsContent>
 
-        <TabsContent value="indicators" className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {/* Simple Moving Averages */}
-            <TechnicalIndicatorCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPeriod={4}
-              defaultType="SMA"
-              category="ma"
-              title="4AVG (SMA)"
-            />
-            <TechnicalIndicatorCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPeriod={9}
-              defaultType="SMA"
-              category="ma"
-              title="9AVG (SMA)"
-            />
-            <TechnicalIndicatorCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPeriod={18}
-              defaultType="SMA"
-              category="ma"
-              title="18AVG (SMA)"
-            />
-            <TechnicalIndicatorCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPeriod={50}
-              defaultType="SMA"
-              category="ma"
-              title="50AVG (SMA)"
-            />
-            <TechnicalIndicatorCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPeriod={200}
-              defaultType="SMA"
-              category="ma"
-              title="200AVG (SMA)"
-            />
-            <TechnicalIndicatorCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPeriod={250}
-              defaultType="SMA"
-              category="ma"
-              title="W50AVG (SMA)"
-            />
-            <TechnicalIndicatorCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPeriod={1000}
-              defaultType="SMA"
-              category="ma"
-              title="W200AVG (SMA)"
-            />
-
-            {/* Exponential Moving Averages */}
-            <TechnicalIndicatorCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPeriod={50}
-              defaultType="EMA"
-              category="ma"
-              title="50AVG (EMA)"
-            />
-            <TechnicalIndicatorCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPeriod={200}
-              defaultType="EMA"
-              category="ma"
-              title="200AVG (EMA)"
-            />
-          </div>
+        {/* Pivots Tab Content */}
+        <TabsContent value="pivots" className="mt-0">
+          <PivotCard
+            candles={candleData}
+            interval={interval}
+            instrument={instrument}
+            refreshTrigger={refreshTrigger}
+            onRefresh={handleGlobalRefresh}
+          />
         </TabsContent>
 
-        <TabsContent value="atr" className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {/* ATR Indicators */}
-            {ATR_TYPES.map((atrType: any) => (
-              <TechnicalIndicatorCard
-                key={atrType.value}
-                candles={candleData}
-                onRefresh={handleGlobalRefresh}
-                defaultType={atrType.value}
-                category="atr"
-                title={atrType.label}
-              />
-            ))}
-
-            {/* Super Trend indicator would go here if implemented */}
-            <Card className="col-span-1 dark:bg-gray-800 dark:border-gray-700">
-              <CardHeader>
-                <CardTitle className="text-sm font-medium dark:text-gray-200">
-                  Super Trend (ST)
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-center">
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
-                    Super Trend calculation requires ATR and a multiplier
-                    factor.
-                  </p>
-                  <Button
-                    variant="outline"
-                    className="mt-4 dark:border-gray-600 dark:text-gray-300"
-                    disabled
-                  >
-                    <TrendingUp className="mr-2 h-4 w-4" />
-                    Coming Soon
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+        {/* Breakouts Tab Content */}
+        <TabsContent value="breakouts" className="mt-0">
+          <MorningRangeBreakoutCard
+            instrument={instrument}
+            refreshTrigger={refreshTrigger}
+            onRefresh={handleGlobalRefresh}
+          />
         </TabsContent>
 
-        <TabsContent value="pivots" className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {/* Standard Pivot Points */}
-            <PivotCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPivotType={PivotType.STANDARD}
-              title="Standard Pivot Points"
-            />
-
-            {/* Fibonacci Pivot Points */}
-            <PivotCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPivotType={PivotType.FIBONACCI}
-              title="Fibonacci Pivot Points"
-            />
-
-            {/* Camarilla Pivot Points */}
-            <PivotCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPivotType={PivotType.CAMARILLA}
-              title="Camarilla Pivot Points"
-            />
-
-            {/* Woodie Pivot Points */}
-            <PivotCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPivotType={PivotType.WOODIE}
-              title="Woodie Pivot Points"
-            />
-
-            {/* DeMark Pivot Points */}
-            <PivotCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPivotType={PivotType.DEMARK}
-              title="DeMark Pivot Points"
-            />
-
-            {/* CPR Pivot Points */}
-            <PivotCard
-              candles={candleData}
-              onRefresh={handleGlobalRefresh}
-              defaultPivotType={PivotType.CPR}
-              title="Central Pivot Range (CPR)"
-            />
-          </div>
+        {/* Scanner Tab Content */}
+        <TabsContent value="scanner" className="mt-0">
+          <StockScanner
+            refreshTrigger={refreshTrigger}
+            onRefresh={handleGlobalRefresh}
+          />
         </TabsContent>
 
-        {/* New Scanner Tab */}
-        <TabsContent value="scanner" className="space-y-4">
-          <div className="grid gap-4 grid-cols-1">
-            <StockScanner />
-          </div>
-        </TabsContent>
+        {/* Technical Indicators Tab Content */}
+        {isInstrumentIndex && (
+          <TabsContent value="indicators" className="mt-0">
+            <TechnicalIndicatorsTable
+              instrument={instrument}
+              interval={interval}
+              refreshTrigger={refreshTrigger}
+              onRefresh={handleGlobalRefresh}
+              isIndex={isInstrumentIndex}
+            />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

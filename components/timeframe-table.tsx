@@ -452,8 +452,9 @@ export default function TimeframeTable({
         toDate = subDays(today, 1);
         break;
       case "threeDays":
-        // Last 3 days including today
-        fromDate = subDays(today, 2);
+        // For 3-day OHLC, get data for last 7 calendar days to ensure we capture at least 3 trading days
+        // The actual filtering for trading days will happen in the data processing
+        fromDate = subDays(today, 7);
         break;
       case "currentWeek":
         // From Monday of current week to today
@@ -603,13 +604,51 @@ export default function TimeframeTable({
         result.data.candles &&
         result.data.candles.length > 0
       ) {
-        const candles = result.data.candles.map(transformCandle);
+        let candles = result.data.candles.map(transformCandle);
 
         // Sort candles by timestamp in descending order (newest first)
         candles.sort(
           (a, b) =>
             new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
+
+        // Special handling for threeDays timeframe
+        if (timeframe === "threeDays") {
+          // Get the last 3 trading days (with actual data)
+          // First, sort candles by timestamp in ascending order (oldest first)
+          candles.sort(
+            (a, b) =>
+              new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+
+          // Get unique trading days from the candles
+          const tradingDays = Array.from(
+            new Set(
+              candles.map((c) => format(new Date(c.timestamp), "yyyy-MM-dd"))
+            )
+          );
+
+          // Take only the last 3 trading days if we have enough
+          if (tradingDays.length >= 3) {
+            const lastThreeTradingDays = tradingDays.slice(-3);
+            // Filter candles to only include the last 3 trading days
+            candles = candles.filter((candle) =>
+              lastThreeTradingDays.includes(
+                format(new Date(candle.timestamp), "yyyy-MM-dd")
+              )
+            );
+          } else {
+            console.log(
+              `Only found ${tradingDays.length} trading days for ${instrumentKey} in threeDays timeframe`
+            );
+          }
+
+          // Sort back to newest first for processing
+          candles.sort(
+            (a, b) =>
+              new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          );
+        }
 
         const data = {
           // Opening price is the first candle's open (earliest date)
@@ -666,7 +705,7 @@ export default function TimeframeTable({
     }
   };
 
-  // Update fetchMultipleTimeframes with localStorage caching
+  // Update fetchMultipleTimeframes with threeDays special handling
   const fetchMultipleTimeframes = async (
     instrumentKey: string,
     timeframeIds: Timeframe[]
@@ -924,10 +963,37 @@ export default function TimeframeTable({
           const { fromDate, toDate } = getDateRangeForTimeframe(tfId);
 
           // Filter candles for this specific timeframe
-          const timeframeCandles = allCandles.filter((candle) => {
+          let timeframeCandles = allCandles.filter((candle) => {
             const candleDate = new Date(candle.timestamp);
             return candleDate >= fromDate && candleDate <= toDate;
           });
+
+          // Special handling for threeDays timeframe
+          if (tfId === "threeDays" && timeframeCandles.length > 0) {
+            // Get unique trading days from the candles
+            const tradingDays = Array.from(
+              new Set(
+                timeframeCandles.map((c) =>
+                  format(new Date(c.timestamp), "yyyy-MM-dd")
+                )
+              )
+            );
+
+            // Take only the last 3 trading days if we have enough
+            if (tradingDays.length >= 3) {
+              const lastThreeTradingDays = tradingDays.slice(-3);
+              // Filter candles to only include the last 3 trading days
+              timeframeCandles = timeframeCandles.filter((candle) =>
+                lastThreeTradingDays.includes(
+                  format(new Date(candle.timestamp), "yyyy-MM-dd")
+                )
+              );
+            } else {
+              console.log(
+                `Only found ${tradingDays.length} trading days for ${instrumentKey} in threeDays timeframe`
+              );
+            }
+          }
 
           if (timeframeCandles.length > 0) {
             const tfData = {
