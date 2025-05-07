@@ -81,14 +81,30 @@ export default function TechnicalIndicatorsTable({
   // Flag to indicate if initial data has been loaded
   const initialDataLoadedRef = useRef<boolean>(false);
 
+  // Add a ref to always have the latest indicatorData
+  const indicatorDataRef = useRef<IndicatorData[]>([]);
+
+  // Update the ref whenever indicatorData changes
+  useEffect(() => {
+    indicatorDataRef.current = indicatorData;
+  }, [indicatorData]);
+
   // Save data to localStorage
   const saveToLocalStorage = (data: IndicatorData[]) => {
     try {
+      if (!data || data.length === 0) {
+        console.warn(
+          "[saveToLocalStorage] Not saving empty data to localStorage."
+        );
+        return;
+      }
       // Ensure we only store MAX_CANDLES
       const dataToStore = data.slice(-MAX_CANDLES);
       const storageKey = getStorageKey(instrument, interval);
       localStorage.setItem(storageKey, JSON.stringify(dataToStore));
-      console.log(`Saved ${dataToStore.length} candles to localStorage`);
+      console.log(
+        `[saveToLocalStorage] Saved ${dataToStore.length} candles to localStorage under key: ${storageKey}`
+      );
     } catch (err) {
       console.error("Error saving to localStorage:", err);
     }
@@ -101,7 +117,9 @@ export default function TechnicalIndicatorsTable({
       const storedData = localStorage.getItem(storageKey);
       if (storedData) {
         const parsedData = JSON.parse(storedData) as IndicatorData[];
-        console.log(`Loaded ${parsedData.length} candles from localStorage`);
+        console.log(
+          `[loadFromLocalStorage] Loaded ${parsedData.length} candles from localStorage under key: ${storageKey}`
+        );
         return parsedData;
       }
     } catch (err) {
@@ -252,12 +270,11 @@ export default function TechnicalIndicatorsTable({
   };
 
   // Calculate buy and sell signals based on custom conditions
-
   const calculateSignals = (data: IndicatorData[]): IndicatorData[] => {
     if (data.length < 3) {
       return data.map((candle) => ({
         ...candle,
-        signal: "NEUTRAL",
+        signal: "NEUTRAL" as SignalType,
         isNewSignal: false,
       }));
     }
@@ -266,7 +283,11 @@ export default function TechnicalIndicatorsTable({
     const withSignals = data.map((candle, index) => {
       // First two candles cannot generate signals (need previous data)
       if (index < 2) {
-        return { ...candle, signal: "NEUTRAL", isNewSignal: false };
+        return {
+          ...candle,
+          signal: "NEUTRAL" as SignalType,
+          isNewSignal: false,
+        };
       }
 
       const current = candle;
@@ -362,8 +383,6 @@ export default function TechnicalIndicatorsTable({
       };
     });
 
-    // Second pass to compute the "isNewSignal" flag
-    // Second pass to compute the "isNewSignal" flag
     // Second pass to compute the "isNewSignal" flag
     return withSignals.map((candle, index) => {
       // First candle or neutral signal is never a new signal
@@ -568,7 +587,6 @@ export default function TechnicalIndicatorsTable({
 
   // Update data with real-time information
   const updateWithRealTimeData = () => {
-    // Only proceed if we have market data and we're working with 1-minute intervals
     if (!isRealTimeMode) {
       return;
     }
@@ -576,16 +594,22 @@ export default function TechnicalIndicatorsTable({
     const rtData =
       marketData[instrument] || marketData[`NSE_INDEX|${instrument}`];
 
-    if (!rtData || !rtData.lastPrice) return;
+    if (!rtData || !rtData.lastPrice) {
+      console.log("No real-time data available");
+      return;
+    }
 
-    // Check if market is open - still update but note if market closed
     const marketOpen = isMarketOpen();
+    if (!marketOpen) {
+      console.log("Market is closed, but still updating data");
+    }
 
-    // Initialize if needed
     if (!initialDataLoadedRef.current) {
+      console.log("Initializing with current price");
       const initialData = initializeWithCurrentPrice();
       if (initialData.length > 0) {
         setIndicatorData(initialData);
+        indicatorDataRef.current = initialData;
         setLastUpdated(
           marketOpen
             ? new Date().toLocaleTimeString()
@@ -597,74 +621,52 @@ export default function TechnicalIndicatorsTable({
       }
     }
 
-    // Get current minute
     const now = new Date();
     const currentMinute = now.getMinutes();
+    const currentHour = now.getHours();
 
-    // If the minute has changed, add a new candle
+    // Use the ref to always get the latest data
+    let prevData = indicatorDataRef.current;
+
     if (
       currentMinute !== lastProcessedMinuteRef.current &&
       lastProcessedMinuteRef.current !== -1
     ) {
       console.log(
-        `Creating new candle: current minute ${currentMinute}, last processed ${lastProcessedMinuteRef.current}`
+        `Creating new candle: current time ${currentHour}:${currentMinute}, last processed ${lastProcessedMinuteRef.current}`
       );
-
-      // Create a copy of existing data
-      let updatedData = [...indicatorData];
 
       // Check for gap minutes (skipped minutes)
       const minuteDiff =
         (currentMinute - lastProcessedMinuteRef.current + 60) % 60;
 
-      // Add candles for all skipped minutes
-      if (minuteDiff > 1) {
-        console.log(
-          `Detected gap of ${minuteDiff} minutes, filling missing candles`
-        );
-
-        // Create a candle for each missed minute
-        for (let i = 1; i < minuteDiff; i++) {
-          const missedMinute = (lastProcessedMinuteRef.current + i) % 60;
-          const missedTime = new Date(now);
-          // If we've wrapped around to a new hour
-          if (missedMinute < lastProcessedMinuteRef.current) {
-            missedTime.setHours(missedTime.getHours() - 1);
-          }
-          missedTime.setMinutes(missedMinute);
-          missedTime.setSeconds(0);
-          missedTime.setMilliseconds(0);
-
-          // Use the last known price for the missed candle
-          const lastCandle = updatedData[updatedData.length - 1];
-          const missedCandle: OHLCData = {
-            timestamp: missedTime.toISOString(),
-            open: lastCandle.close,
-            high: lastCandle.close,
-            low: lastCandle.close,
-            close: lastCandle.close,
-          };
-
-          // Extract just OHLC data
-          const ohlcData: OHLCData[] = updatedData.map((item) => ({
-            timestamp: item.timestamp,
-            open: item.open,
-            high: item.high,
-            low: item.low,
-            close: item.close,
-          }));
-
-          // Add the missed candle
-          ohlcData.push(missedCandle);
-
-          // Enforce MAX_CANDLES limit
-          if (ohlcData.length > MAX_CANDLES) {
-            ohlcData.shift();
-          }
-
-          // Recalculate all indicators with the new data
-          updatedData = processData(ohlcData);
+      // Fill any missing minutes
+      for (let i = 1; i < minuteDiff; i++) {
+        const missedMinute = (lastProcessedMinuteRef.current + i) % 60;
+        const missedTime = new Date(now);
+        if (missedMinute < lastProcessedMinuteRef.current) {
+          missedTime.setHours(missedTime.getHours() - 1);
         }
+        missedTime.setMinutes(missedMinute);
+        missedTime.setSeconds(0);
+        missedTime.setMilliseconds(0);
+        const lastCandle = prevData[prevData.length - 1];
+        const missedCandle: OHLCData = {
+          timestamp: missedTime.toISOString(),
+          open: lastCandle.close,
+          high: lastCandle.close,
+          low: lastCandle.close,
+          close: lastCandle.close,
+        };
+        // Fix: Always process to IndicatorData[]
+        const ohlcData = [...prevData, missedCandle].map((item) => ({
+          timestamp: item.timestamp,
+          open: item.open,
+          high: item.high,
+          low: item.low,
+          close: item.close,
+        }));
+        prevData = processData(ohlcData);
       }
 
       // Create a new candle for the current minute
@@ -675,73 +677,39 @@ export default function TechnicalIndicatorsTable({
         low: rtData.lastPrice,
         close: rtData.lastPrice,
       };
-
-      // Extract OHLC data from existing indicator data
-      const ohlcData: OHLCData[] = updatedData.map((item) => ({
-        timestamp: item.timestamp,
-        open: item.open,
-        high: item.high,
-        low: item.low,
-        close: item.close,
-      }));
-
-      // Add the new candle
-      ohlcData.push(newCandle);
-
-      // Enforce MAX_CANDLES limit - remove oldest if we exceed
-      if (ohlcData.length > MAX_CANDLES) {
-        ohlcData.shift();
-      }
-
-      // Process data to recalculate indicators and signals
+      const ohlcData = [...prevData, newCandle].slice(-MAX_CANDLES);
       const processedData = processData(ohlcData);
-
-      // Update state
       setIndicatorData(processedData);
+      indicatorDataRef.current = processedData;
+      saveToLocalStorage(processedData);
+      lastProcessedMinuteRef.current = currentMinute;
       setLastUpdated(
         marketOpen
           ? new Date().toLocaleTimeString()
           : `${new Date().toLocaleTimeString()} (Market Closed)`
       );
-      saveToLocalStorage(processedData); // Save to localStorage
-
-      // Update the last processed minute
-      lastProcessedMinuteRef.current = currentMinute;
-      console.log(`Updated last processed minute to ${currentMinute}`);
-    }
-    // Otherwise just update the latest candle's high, low and close
-    else if (indicatorData.length > 0) {
-      // Get the latest candle
-      const lastCandle = indicatorData[indicatorData.length - 1];
-
-      // Extract OHLC data from existing indicator data
-      const ohlcData: OHLCData[] = indicatorData.map((item) => ({
-        timestamp: item.timestamp,
-        open: item.open,
-        high: item.high,
-        low: item.low,
-        close: item.close,
-      }));
-
-      // Update the last candle with new price info
-      ohlcData[ohlcData.length - 1] = {
-        ...ohlcData[ohlcData.length - 1],
+    } else if (prevData.length > 0) {
+      // Update the latest candle's high, low, close
+      const lastCandle = prevData[prevData.length - 1];
+      const updatedLastCandle: OHLCData = {
+        ...lastCandle,
         high: Math.max(lastCandle.high, rtData.lastPrice),
         low: Math.min(lastCandle.low, rtData.lastPrice),
         close: rtData.lastPrice,
       };
-
-      // Process data to recalculate indicators and signals
+      const ohlcData = [
+        ...prevData.slice(0, prevData.length - 1),
+        updatedLastCandle,
+      ];
       const processedData = processData(ohlcData);
-
-      // Update state
       setIndicatorData(processedData);
+      indicatorDataRef.current = processedData;
+      saveToLocalStorage(processedData);
       setLastUpdated(
         marketOpen
           ? new Date().toLocaleTimeString()
           : `${new Date().toLocaleTimeString()} (Market Closed)`
       );
-      saveToLocalStorage(processedData); // Save to localStorage
     }
   };
 
@@ -758,13 +726,33 @@ export default function TechnicalIndicatorsTable({
     // Reset state when instrument or interval changes
     initialDataLoadedRef.current = false;
     lastProcessedMinuteRef.current = -1;
-    setIndicatorData([]);
+    // Do NOT clear indicatorData here! Only clear on explicit reset.
+    // setIndicatorData([]); // <-- Removed for robustness
 
     // Set real-time mode flag
     const isMinuteInterval = interval === "minute" || interval === "1minute";
     setIsRealTimeMode(isMinuteInterval && isConnected);
 
-    fetchHistoricalData();
+    // Try to load from localStorage first
+    const storedData = loadFromLocalStorage();
+    if (storedData && storedData.length > 0) {
+      console.log(
+        "Loaded data from localStorage:",
+        storedData.length,
+        "candles"
+      );
+      setIndicatorData(storedData);
+      initialDataLoadedRef.current = true;
+
+      // Set the last processed minute from the last candle
+      const lastCandle = storedData[storedData.length - 1];
+      const lastCandleTime = new Date(lastCandle.timestamp);
+      lastProcessedMinuteRef.current = lastCandleTime.getMinutes();
+
+      setIsLoading(false); // <-- FIX: stop loading after localStorage load
+    } else {
+      fetchHistoricalData();
+    }
 
     // Clean up any existing interval
     if (updateIntervalRef.current) {
@@ -858,6 +846,12 @@ export default function TechnicalIndicatorsTable({
             size="sm"
             onClick={() => {
               localStorage.removeItem(getStorageKey(instrument, interval));
+              console.log(
+                `[Reset Data] Cleared localStorage for key: ${getStorageKey(
+                  instrument,
+                  interval
+                )}`
+              );
               fetchHistoricalData();
             }}
             disabled={isLoading}
