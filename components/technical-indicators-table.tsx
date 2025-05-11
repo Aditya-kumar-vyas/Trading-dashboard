@@ -2,7 +2,16 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { format } from "date-fns";
-import { RefreshCw, Loader2, ArrowUp, ArrowDown } from "lucide-react";
+import {
+  RefreshCw,
+  Loader2,
+  ArrowUp,
+  ArrowDown,
+  AlertTriangle,
+  CheckCircle,
+  Clock,
+  Activity,
+} from "lucide-react";
 import {
   Table,
   TableBody,
@@ -16,6 +25,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 import { OHLCData, Interval, APIResponse } from "@/app/types";
 import { useMarketData } from "./market-data-context";
@@ -46,12 +61,33 @@ interface IndicatorData extends OHLCData {
   isNewSignal?: boolean; // Flag to indicate if this is a new signal
 }
 
+// New interface for current candle tracking
+interface InProgressCandle extends OHLCData {
+  updates: number; // Count of price updates received
+  lastUpdateTime: string; // Timestamp of last update
+}
+
+// Debug status type
+type DebugStatus = {
+  connectionState: "connected" | "disconnected" | "stale";
+  lastPrice: number | null;
+  lastUpdateTime: string | null;
+  updatesThisMinute: number;
+  currentCandle: InProgressCandle | null;
+  dataHealthy: boolean;
+  message: string;
+};
+
 // ATR Multiplier and Period for Supertrend calculation
 const SUPERTREND_MULTIPLIER = 3;
 const SUPERTREND_PERIOD = 7;
 
 // Fixed number of candles to display
 const MAX_CANDLES = 100;
+
+// Data health thresholds
+const STALE_DATA_THRESHOLD_SECONDS = 5;
+const DEBUG_LOG_ENABLED = true;
 
 // Add local storage keys for persistence
 const STORAGE_KEY_PREFIX = "technical-indicators-";
@@ -72,8 +108,20 @@ export default function TechnicalIndicatorsTable({
   const [isRealTimeMode, setIsRealTimeMode] = useState<boolean>(false);
   const { isConnected, marketData, subscribeToInstruments } = useMarketData();
 
+  // New debug state
+  const [debugStatus, setDebugStatus] = useState<DebugStatus>({
+    connectionState: "disconnected",
+    lastPrice: null,
+    lastUpdateTime: null,
+    updatesThisMinute: 0,
+    currentCandle: null,
+    dataHealthy: false,
+    message: "Initializing...",
+  });
+
   // Reference to store the interval ID for real-time updates
   const updateIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const debugIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Store the last minute we processed to detect minute changes
   const lastProcessedMinuteRef = useRef<number>(-1);
@@ -84,6 +132,24 @@ export default function TechnicalIndicatorsTable({
   // Add a ref to always have the latest indicatorData
   const indicatorDataRef = useRef<IndicatorData[]>([]);
 
+  // New ref for tracking current candle being built
+  const currentCandleRef = useRef<InProgressCandle | null>(null);
+
+  // Track market data updates
+  const lastDataUpdateTimeRef = useRef<number>(Date.now());
+  const priceUpdatesCountRef = useRef<number>(0);
+
+  // Helper function for debug logging
+  const debugLog = (message: string, data?: any) => {
+    if (DEBUG_LOG_ENABLED) {
+      if (data) {
+        console.log(`[TechnicalIndicators] ${message}`, data);
+      } else {
+        console.log(`[TechnicalIndicators] ${message}`);
+      }
+    }
+  };
+
   // Update the ref whenever indicatorData changes
   useEffect(() => {
     indicatorDataRef.current = indicatorData;
@@ -93,17 +159,15 @@ export default function TechnicalIndicatorsTable({
   const saveToLocalStorage = (data: IndicatorData[]) => {
     try {
       if (!data || data.length === 0) {
-        console.warn(
-          "[saveToLocalStorage] Not saving empty data to localStorage."
-        );
+        debugLog("Not saving empty data to localStorage.");
         return;
       }
       // Ensure we only store MAX_CANDLES
       const dataToStore = data.slice(-MAX_CANDLES);
       const storageKey = getStorageKey(instrument, interval);
       localStorage.setItem(storageKey, JSON.stringify(dataToStore));
-      console.log(
-        `[saveToLocalStorage] Saved ${dataToStore.length} candles to localStorage under key: ${storageKey}`
+      debugLog(
+        `Saved ${dataToStore.length} candles to localStorage: ${storageKey}`
       );
     } catch (err) {
       console.error("Error saving to localStorage:", err);
@@ -117,8 +181,8 @@ export default function TechnicalIndicatorsTable({
       const storedData = localStorage.getItem(storageKey);
       if (storedData) {
         const parsedData = JSON.parse(storedData) as IndicatorData[];
-        console.log(
-          `[loadFromLocalStorage] Loaded ${parsedData.length} candles from localStorage under key: ${storageKey}`
+        debugLog(
+          `Loaded ${parsedData.length} candles from localStorage: ${storageKey}`
         );
         return parsedData;
       }
@@ -324,7 +388,7 @@ export default function TechnicalIndicatorsTable({
 
       // Debug logging for latest candle
       if (index === data.length - 1) {
-        console.log("Latest candle SELL conditions:", {
+        debugLog("Latest candle SELL conditions:", {
           sellCondition1,
           sellCondition2,
           sellCondition3,
@@ -337,7 +401,7 @@ export default function TechnicalIndicatorsTable({
           threshold: current.close * threshold,
         });
 
-        console.log("Latest candle BUY conditions:", {
+        debugLog("Latest candle BUY conditions:", {
           buyCondition1,
           buyCondition2,
           buyCondition3,
@@ -402,6 +466,13 @@ export default function TechnicalIndicatorsTable({
 
   // Combine raw OHLC data with calculated indicators and signals
   const processData = (rawData: OHLCData[]): IndicatorData[] => {
+    if (!rawData || rawData.length === 0) {
+      debugLog("No data to process");
+      return [];
+    }
+
+    debugLog(`Processing ${rawData.length} candles`);
+
     // Sort data by timestamp in ascending order (oldest first)
     const sortedData = [...rawData].sort(
       (a, b) =>
@@ -452,17 +523,34 @@ export default function TechnicalIndicatorsTable({
     return currentTime >= marketStart && currentTime <= marketEnd;
   };
 
+  // Helper function to initialize current candle
+  const initializeCurrentCandle = (time: Date, price: number) => {
+    currentCandleRef.current = {
+      timestamp: time.toISOString(),
+      open: price,
+      high: price,
+      low: price,
+      close: price,
+      updates: 1,
+      lastUpdateTime: time.toISOString(),
+    };
+    debugLog("Initialized current candle", currentCandleRef.current);
+  };
+
   // Initialize with a single candle at current time
   const initializeWithCurrentPrice = () => {
     const rtData =
       marketData[instrument] || marketData[`NSE_INDEX|${instrument}`];
 
-    if (!rtData || !rtData.lastPrice) return [];
+    if (!rtData || !rtData.lastPrice) {
+      debugLog("No real-time data available for initialization");
+      return [];
+    }
 
     // Try to load existing data from localStorage first
     const storedData = loadFromLocalStorage();
     if (storedData && storedData.length > 0) {
-      console.log("Using stored data for initialization");
+      debugLog("Using stored data for initialization");
 
       // Check if stored data is fresh (from the current trading session)
       const lastCandleTime = new Date(
@@ -473,7 +561,7 @@ export default function TechnicalIndicatorsTable({
 
       // If stored data is from previous day or too old (> 60 min), start fresh
       if (timeDiff > 60 || lastCandleTime.getDate() !== now.getDate()) {
-        console.log("Stored data too old, creating new data");
+        debugLog("Stored data too old, creating new data");
 
         // Create a new candle with current price
         const initialCandle: OHLCData = {
@@ -484,6 +572,9 @@ export default function TechnicalIndicatorsTable({
           close: rtData.lastPrice,
         };
 
+        // Initialize current candle for ongoing updates
+        initializeCurrentCandle(now, rtData.lastPrice);
+
         // Set the last processed minute
         lastProcessedMinuteRef.current = now.getMinutes();
 
@@ -493,6 +584,11 @@ export default function TechnicalIndicatorsTable({
 
       // Update last processed minute to match the last candle
       lastProcessedMinuteRef.current = lastCandleTime.getMinutes();
+
+      // Initialize current candle for ongoing updates
+
+      initializeCurrentCandle(now, rtData.lastPrice);
+
       return storedData;
     }
 
@@ -506,6 +602,9 @@ export default function TechnicalIndicatorsTable({
       low: rtData.lastPrice,
       close: rtData.lastPrice,
     };
+
+    // Initialize current candle for ongoing updates
+    initializeCurrentCandle(now, rtData.lastPrice);
 
     // Set the last processed minute
     lastProcessedMinuteRef.current = now.getMinutes();
@@ -523,7 +622,7 @@ export default function TechnicalIndicatorsTable({
       // When interval is 1minute or minute, prioritize real-time data immediately
       if ((interval === "minute" || interval === "1minute") && isConnected) {
         const initialData = initializeWithCurrentPrice();
-        if (initialData.length > 0) {
+        if (initialData && initialData.length > 0) {
           setIndicatorData(initialData);
           setLastUpdated(new Date().toLocaleTimeString());
           setIsLoading(false);
@@ -550,6 +649,9 @@ export default function TechnicalIndicatorsTable({
       const formattedFromDate = format(pastDate, "yyyy-MM-dd");
 
       // Fetch data
+      debugLog(
+        `Fetching historical data for ${instrument} interval ${interval}`
+      );
       const response = await fetch(
         `/api/historical-data?instrument=${encodeURIComponent(
           instrument
@@ -568,12 +670,23 @@ export default function TechnicalIndicatorsTable({
         result.data.candles.length > 0
       ) {
         const candles = result.data.candles.map(transformCandle);
+        debugLog(`Received ${candles.length} historical candles`);
+
         const processedData = processData(candles);
 
         setIndicatorData(processedData);
         setLastUpdated(new Date().toLocaleTimeString());
         initialDataLoadedRef.current = true;
         saveToLocalStorage(processedData); // Save to localStorage
+
+        // Initialize current candle with latest price if in real-time mode
+        if (isRealTimeMode) {
+          const rtData =
+            marketData[instrument] || marketData[`NSE_INDEX|${instrument}`];
+          if (rtData && rtData.lastPrice) {
+            initializeCurrentCandle(new Date(), rtData.lastPrice);
+          }
+        }
       } else {
         setError("No data available for the selected instrument and interval.");
       }
@@ -585,7 +698,7 @@ export default function TechnicalIndicatorsTable({
     }
   };
 
-  // Update data with real-time information
+  // Enhanced update with real-time data function
   const updateWithRealTimeData = () => {
     if (!isRealTimeMode) {
       return;
@@ -595,128 +708,170 @@ export default function TechnicalIndicatorsTable({
       marketData[instrument] || marketData[`NSE_INDEX|${instrument}`];
 
     if (!rtData || !rtData.lastPrice) {
-      console.log("No real-time data available");
+      debugLog("No real-time data available");
       return;
     }
 
-    const marketOpen = isMarketOpen();
-    if (!marketOpen) {
-      console.log("Market is closed, but still updating data");
-    }
-
-    if (!initialDataLoadedRef.current) {
-      console.log("Initializing with current price");
-      const initialData = initializeWithCurrentPrice();
-      if (initialData.length > 0) {
-        setIndicatorData(initialData);
-        indicatorDataRef.current = initialData;
-        setLastUpdated(
-          marketOpen
-            ? new Date().toLocaleTimeString()
-            : `${new Date().toLocaleTimeString()} (Market Closed)`
-        );
-        initialDataLoadedRef.current = true;
-        saveToLocalStorage(initialData);
-        return;
-      }
-    }
+    // Record last update time
+    lastDataUpdateTimeRef.current = Date.now();
 
     const now = new Date();
     const currentMinute = now.getMinutes();
-    const currentHour = now.getHours();
+    const currentPrice = rtData.lastPrice;
 
-    // Use the ref to always get the latest data
-    let prevData = indicatorDataRef.current;
+    // Update debug information
+    updateDebugInfo(currentPrice, now);
 
-    if (
-      currentMinute !== lastProcessedMinuteRef.current &&
-      lastProcessedMinuteRef.current !== -1
-    ) {
-      console.log(
-        `Creating new candle: current time ${currentHour}:${currentMinute}, last processed ${lastProcessedMinuteRef.current}`
+    // Check for minute change to create a new candle
+    if (lastProcessedMinuteRef.current !== currentMinute) {
+      debugLog(
+        `Minute change detected: ${lastProcessedMinuteRef.current} → ${currentMinute}`
       );
 
-      // Check for gap minutes (skipped minutes)
-      const minuteDiff =
-        (currentMinute - lastProcessedMinuteRef.current + 60) % 60;
+      // If we have a current candle, finalize it and add to history
+      if (currentCandleRef.current) {
+        debugLog("Finalizing current candle", currentCandleRef.current);
 
-      // Fill any missing minutes
-      for (let i = 1; i < minuteDiff; i++) {
-        const missedMinute = (lastProcessedMinuteRef.current + i) % 60;
-        const missedTime = new Date(now);
-        if (missedMinute < lastProcessedMinuteRef.current) {
-          missedTime.setHours(missedTime.getHours() - 1);
-        }
-        missedTime.setMinutes(missedMinute);
-        missedTime.setSeconds(0);
-        missedTime.setMilliseconds(0);
-        const lastCandle = prevData[prevData.length - 1];
-        const missedCandle: OHLCData = {
-          timestamp: missedTime.toISOString(),
-          open: lastCandle.close,
-          high: lastCandle.close,
-          low: lastCandle.close,
-          close: lastCandle.close,
+        // Create a standard OHLC candle from the in-progress one
+        const finalizedCandle: OHLCData = {
+          timestamp: currentCandleRef.current.timestamp,
+          open: currentCandleRef.current.open,
+          high: currentCandleRef.current.high,
+          low: currentCandleRef.current.low,
+          close: currentCandleRef.current.close,
         };
-        // Fix: Always process to IndicatorData[]
-        const ohlcData = [...prevData, missedCandle].map((item) => ({
-          timestamp: item.timestamp,
-          open: item.open,
-          high: item.high,
-          low: item.low,
-          close: item.close,
-        }));
-        prevData = processData(ohlcData);
+
+        // Add the finalized candle to history and process
+        const updatedCandles = [
+          ...indicatorDataRef.current,
+          finalizedCandle,
+        ].slice(-MAX_CANDLES);
+        const processedData = processData(updatedCandles);
+
+        // Update state, refs, and persistence
+        setIndicatorData(processedData);
+        indicatorDataRef.current = processedData; // Update ref immediately
+        saveToLocalStorage(processedData);
+
+        // Update UI information
+        setLastUpdated(now.toLocaleTimeString());
       }
 
       // Create a new candle for the current minute
-      const newCandle: OHLCData = {
+      currentCandleRef.current = {
         timestamp: now.toISOString(),
-        open: rtData.lastPrice,
-        high: rtData.lastPrice,
-        low: rtData.lastPrice,
-        close: rtData.lastPrice,
+        open: currentPrice,
+        high: currentPrice,
+        low: currentPrice,
+        close: currentPrice,
+        updates: 1,
+        lastUpdateTime: now.toISOString(),
       };
-      const ohlcData = [...prevData, newCandle].slice(-MAX_CANDLES);
-      const processedData = processData(ohlcData);
-      setIndicatorData(processedData);
-      indicatorDataRef.current = processedData;
-      saveToLocalStorage(processedData);
+
+      // Reset update counter for the new minute
+      priceUpdatesCountRef.current = 1;
+
+      // Update the minute reference
       lastProcessedMinuteRef.current = currentMinute;
-      setLastUpdated(
-        marketOpen
-          ? new Date().toLocaleTimeString()
-          : `${new Date().toLocaleTimeString()} (Market Closed)`
-      );
-    } else if (prevData.length > 0) {
-      // Update the latest candle's high, low, close
-      const lastCandle = prevData[prevData.length - 1];
-      const updatedLastCandle: OHLCData = {
-        ...lastCandle,
-        high: Math.max(lastCandle.high, rtData.lastPrice),
-        low: Math.min(lastCandle.low, rtData.lastPrice),
-        close: rtData.lastPrice,
-      };
-      const ohlcData = [
-        ...prevData.slice(0, prevData.length - 1),
-        updatedLastCandle,
-      ];
-      const processedData = processData(ohlcData);
-      setIndicatorData(processedData);
-      indicatorDataRef.current = processedData;
-      saveToLocalStorage(processedData);
-      setLastUpdated(
-        marketOpen
-          ? new Date().toLocaleTimeString()
-          : `${new Date().toLocaleTimeString()} (Market Closed)`
-      );
+
+      debugLog("New candle created", currentCandleRef.current);
     }
+    // Same minute - update the current candle
+    else if (currentCandleRef.current) {
+      // Increment update counter
+      priceUpdatesCountRef.current++;
+
+      // Update high/low/close values
+      const candle = currentCandleRef.current;
+      let updated = false;
+
+      // Update high if price is higher
+      if (currentPrice > candle.high) {
+        candle.high = currentPrice;
+        updated = true;
+      }
+
+      // Update low if price is lower
+      if (currentPrice < candle.low) {
+        candle.low = currentPrice;
+        updated = true;
+      }
+
+      // Always update close with latest price
+      if (candle.close !== currentPrice) {
+        candle.close = currentPrice;
+        updated = true;
+      }
+
+      // Update metadata
+      candle.updates++;
+      candle.lastUpdateTime = now.toISOString();
+
+      if (updated) {
+        debugLog("Updated current candle", {
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+          updates: candle.updates,
+        });
+
+        // Update debug status with new candle data
+        setDebugStatus((prev) => ({
+          ...prev,
+          currentCandle: { ...candle },
+        }));
+      }
+    }
+    // No current candle but we should have one - initialize
+    else {
+      debugLog("No current candle found, initializing one");
+      initializeCurrentCandle(now, currentPrice);
+      priceUpdatesCountRef.current = 1;
+    }
+  };
+
+  // Update debug information
+  const updateDebugInfo = (currentPrice: number, now: Date) => {
+    const timeSinceLastUpdate =
+      (Date.now() - lastDataUpdateTimeRef.current) / 1000;
+    const isDataStale = timeSinceLastUpdate > STALE_DATA_THRESHOLD_SECONDS;
+
+    let connectionState: "connected" | "disconnected" | "stale" = isConnected
+      ? isDataStale
+        ? "stale"
+        : "connected"
+      : "disconnected";
+
+    let message = "";
+
+    switch (connectionState) {
+      case "connected":
+        message = "Data flowing normally";
+        break;
+      case "disconnected":
+        message = "WebSocket disconnected";
+        break;
+      case "stale":
+        message = `No updates in ${Math.round(timeSinceLastUpdate)}s`;
+        break;
+    }
+
+    setDebugStatus({
+      connectionState,
+      lastPrice: currentPrice,
+      lastUpdateTime: now.toISOString(),
+      updatesThisMinute: priceUpdatesCountRef.current,
+      currentCandle: currentCandleRef.current,
+      dataHealthy: connectionState === "connected",
+      message,
+    });
   };
 
   // Subscribe to this instrument
   useEffect(() => {
     if (isConnected && instrument) {
       // Subscribe to this instrument if needed
+      debugLog(`Subscribing to instrument: ${instrument}`);
       subscribeToInstruments([instrument]);
     }
   }, [isConnected, instrument, subscribeToInstruments]);
@@ -726,22 +881,21 @@ export default function TechnicalIndicatorsTable({
     // Reset state when instrument or interval changes
     initialDataLoadedRef.current = false;
     lastProcessedMinuteRef.current = -1;
-    // Do NOT clear indicatorData here! Only clear on explicit reset.
-    // setIndicatorData([]); // <-- Removed for robustness
+    currentCandleRef.current = null;
+    priceUpdatesCountRef.current = 0;
 
     // Set real-time mode flag
     const isMinuteInterval = interval === "minute" || interval === "1minute";
     setIsRealTimeMode(isMinuteInterval && isConnected);
 
+    debugLog(`Real-time mode: ${isMinuteInterval && isConnected}`);
+
     // Try to load from localStorage first
     const storedData = loadFromLocalStorage();
     if (storedData && storedData.length > 0) {
-      console.log(
-        "Loaded data from localStorage:",
-        storedData.length,
-        "candles"
-      );
+      debugLog(`Loaded ${storedData.length} candles from localStorage`);
       setIndicatorData(storedData);
+      indicatorDataRef.current = storedData;
       initialDataLoadedRef.current = true;
 
       // Set the last processed minute from the last candle
@@ -749,30 +903,82 @@ export default function TechnicalIndicatorsTable({
       const lastCandleTime = new Date(lastCandle.timestamp);
       lastProcessedMinuteRef.current = lastCandleTime.getMinutes();
 
-      setIsLoading(false); // <-- FIX: stop loading after localStorage load
+      // Initialize current candle if in real-time mode
+      if (isRealTimeMode) {
+        const rtData =
+          marketData[instrument] || marketData[`NSE_INDEX|${instrument}`];
+        if (rtData && rtData.lastPrice) {
+          const now = new Date();
+          initializeCurrentCandle(now, rtData.lastPrice);
+
+          // Update debug status with initial data
+          updateDebugInfo(rtData.lastPrice, now);
+        }
+      }
+
+      setIsLoading(false);
     } else {
       fetchHistoricalData();
     }
 
-    // Clean up any existing interval
+    // Clean up any existing intervals
     if (updateIntervalRef.current) {
       clearInterval(updateIntervalRef.current);
     }
 
-    // Set up interval for real-time updates - check more frequently for smoother updates
+    if (debugIntervalRef.current) {
+      clearInterval(debugIntervalRef.current);
+    }
+
+    // Set up interval for real-time updates - check every second
     updateIntervalRef.current = setInterval(() => {
       if (isConnected) {
         updateWithRealTimeData();
       }
-    }, 1000); // Update every second
+    }, 1000);
+
+    // Set up interval for debug status updates
+    debugIntervalRef.current = setInterval(() => {
+      const now = Date.now();
+      const secondsSinceUpdate = (now - lastDataUpdateTimeRef.current) / 1000;
+
+      // Update status message if time since last update changes
+      setDebugStatus((prev) => {
+        if (!prev.lastUpdateTime) return prev;
+
+        const connectionState: "connected" | "disconnected" | "stale" =
+          isConnected
+            ? secondsSinceUpdate > STALE_DATA_THRESHOLD_SECONDS
+              ? "stale"
+              : "connected"
+            : "disconnected";
+
+        let message = prev.message;
+
+        if (connectionState === "stale") {
+          message = `No updates in ${Math.round(secondsSinceUpdate)}s`;
+        }
+
+        return {
+          ...prev,
+          connectionState,
+          dataHealthy: connectionState === "connected",
+          message,
+        };
+      });
+    }, 1000);
 
     // Clean up on unmount
     return () => {
       if (updateIntervalRef.current) {
         clearInterval(updateIntervalRef.current);
       }
+
+      if (debugIntervalRef.current) {
+        clearInterval(debugIntervalRef.current);
+      }
     };
-  }, [instrument, interval, refreshTrigger, isConnected]);
+  }, [instrument, interval, refreshTrigger, isConnected, marketData]);
 
   // Format timestamp based on interval
   const formatTimestamp = (timestamp: string) => {
@@ -789,6 +995,103 @@ export default function TechnicalIndicatorsTable({
     } else {
       return format(date, "dd MMM yyyy HH:mm");
     }
+  };
+
+  // Render real-time debug banner
+  const renderDebugBanner = () => {
+    if (!isRealTimeMode) return null;
+
+    const {
+      connectionState,
+      lastPrice,
+      lastUpdateTime,
+      updatesThisMinute,
+      currentCandle,
+      message,
+    } = debugStatus;
+
+    const statusColor = {
+      connected:
+        "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+      disconnected: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+      stale:
+        "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
+    };
+
+    const statusIcon = {
+      connected: <CheckCircle className="h-4 w-4 mr-1" />,
+      disconnected: <AlertTriangle className="h-4 w-4 mr-1" />,
+      stale: <Clock className="h-4 w-4 mr-1" />,
+    };
+
+    return (
+      <div className="mb-4 p-3 rounded-md bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+        <div className="text-sm font-medium mb-2">Real-Time Debug Status</div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+          <div className="flex items-center">
+            <div
+              className={`py-1 px-2 rounded-md flex items-center ${statusColor[connectionState]}`}
+            >
+              {statusIcon[connectionState]}
+              <span>
+                {connectionState === "connected"
+                  ? "Connected"
+                  : connectionState === "stale"
+                  ? "Stale Data"
+                  : "Disconnected"}
+              </span>
+            </div>
+          </div>
+
+          {lastPrice && (
+            <div className="flex items-center gap-1">
+              <Activity className="h-4 w-4" />
+              <span>
+                Last Price: <strong>{lastPrice.toFixed(2)}</strong>
+              </span>
+            </div>
+          )}
+
+          {updatesThisMinute > 0 && (
+            <div className="flex items-center gap-1">
+              <RefreshCw className="h-4 w-4" />
+              <span>
+                Updates: <strong>{updatesThisMinute}</strong>
+              </span>
+            </div>
+          )}
+        </div>
+
+        {currentCandle && (
+          <div className="mt-2 p-2 bg-slate-100 dark:bg-slate-800 rounded-md">
+            <div className="text-xs font-medium mb-1">
+              Current Minute Candle (In Progress)
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+              <div>
+                O: <strong>{currentCandle.open.toFixed(2)}</strong>
+              </div>
+              <div>
+                H: <strong>{currentCandle.high.toFixed(2)}</strong>
+              </div>
+              <div>
+                L: <strong>{currentCandle.low.toFixed(2)}</strong>
+              </div>
+              <div>
+                C: <strong>{currentCandle.close.toFixed(2)}</strong>
+              </div>
+              <div>
+                Updates: <strong>{currentCandle.updates}</strong>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          {message}
+        </div>
+      </div>
+    );
   };
 
   // Render loading state
@@ -846,7 +1149,7 @@ export default function TechnicalIndicatorsTable({
             size="sm"
             onClick={() => {
               localStorage.removeItem(getStorageKey(instrument, interval));
-              console.log(
+              debugLog(
                 `[Reset Data] Cleared localStorage for key: ${getStorageKey(
                   instrument,
                   interval
@@ -877,100 +1180,165 @@ export default function TechnicalIndicatorsTable({
         ) : error ? (
           renderError()
         ) : (
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="whitespace-nowrap">Time</TableHead>
-                  <TableHead>Open</TableHead>
-                  <TableHead>High</TableHead>
-                  <TableHead>Low</TableHead>
-                  <TableHead>Close</TableHead>
-                  <TableHead>EMA-9</TableHead>
-                  <TableHead>EMA-18</TableHead>
-                  <TableHead>Supertrend</TableHead>
-                  <TableHead>Signal</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {indicatorData.map((item, index) => {
-                  const isBullish = item.supertrend.direction === "up";
-                  const isBearish = item.supertrend.direction === "down";
-                  const priceGoingUp =
-                    index > 0 && item.close > indicatorData[index - 1].close;
-                  const priceGoingDown =
-                    index > 0 && item.close < indicatorData[index - 1].close;
+          <>
+            {renderDebugBanner()}
 
-                  return (
-                    <TableRow key={item.timestamp}>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="whitespace-nowrap">Time</TableHead>
+                    <TableHead>Open</TableHead>
+                    <TableHead>High</TableHead>
+                    <TableHead>Low</TableHead>
+                    <TableHead>Close</TableHead>
+                    <TableHead>EMA-9</TableHead>
+                    <TableHead>EMA-18</TableHead>
+                    <TableHead>Supertrend</TableHead>
+                    <TableHead>Signal</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {/* Show current in-progress candle at the top when in real-time mode */}
+                  {isRealTimeMode && currentCandleRef.current && (
+                    <TableRow className="bg-blue-50 dark:bg-blue-900/20 border-l-4 border-blue-500">
                       <TableCell className="whitespace-nowrap font-medium">
-                        {formatTimestamp(item.timestamp)}
+                        {formatTimestamp(currentCandleRef.current.timestamp)}
+                        <Badge variant="outline" className="ml-2 animate-pulse">
+                          Live
+                        </Badge>
                       </TableCell>
-                      <TableCell>{item.open.toFixed(2)}</TableCell>
-                      <TableCell>{item.high.toFixed(2)}</TableCell>
-                      <TableCell>{item.low.toFixed(2)}</TableCell>
+                      <TableCell>
+                        {currentCandleRef.current.open.toFixed(2)}
+                      </TableCell>
+                      <TableCell>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <span className="text-green-600 dark:text-green-400 font-medium">
+                                {currentCandleRef.current.high.toFixed(2)}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>Real-time high</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </TableCell>
+                      <TableCell>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <span className="text-red-600 dark:text-red-400 font-medium">
+                                {currentCandleRef.current.low.toFixed(2)}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>Real-time low</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <span className="text-blue-600 dark:text-blue-400">
+                                {currentCandleRef.current.close.toFixed(2)}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              Current price (updates in real-time)
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </TableCell>
                       <TableCell
-                        className={
-                          priceGoingUp
-                            ? "text-green-600 dark:text-green-400"
-                            : priceGoingDown
-                            ? "text-red-600 dark:text-red-400"
-                            : ""
-                        }
+                        colSpan={4}
+                        className="text-center text-xs text-slate-500"
                       >
-                        {item.close.toFixed(2)}
-                      </TableCell>
-                      <TableCell>{item.ema9.toFixed(2)}</TableCell>
-                      <TableCell>{item.ema18.toFixed(2)}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={
-                              isBullish
-                                ? "text-green-600 dark:text-green-400"
-                                : "text-red-600 dark:text-red-400"
-                            }
-                          >
-                            {item.supertrend.value.toFixed(2)}
-                          </span>
-                          <Badge
-                            variant={isBullish ? "success" : "destructive"}
-                          >
-                            {isBullish ? "Bullish" : "Bearish"}
-                          </Badge>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {item.signal === "BUY" ? (
-                          <Badge
-                            variant="success"
-                            className={`flex items-center gap-1 ${
-                              item.isNewSignal ? "animate-pulse" : ""
-                            }`}
-                          >
-                            <ArrowUp className="h-3 w-3" />
-                            BUY
-                          </Badge>
-                        ) : item.signal === "SELL" ? (
-                          <Badge
-                            variant="destructive"
-                            className={`flex items-center gap-1 ${
-                              item.isNewSignal ? "animate-pulse" : ""
-                            }`}
-                          >
-                            <ArrowDown className="h-3 w-3" />
-                            SELL
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline">NEUTRAL</Badge>
-                        )}
+                        In-progress candle (Updates:{" "}
+                        {currentCandleRef.current.updates})
                       </TableCell>
                     </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
+                  )}
+
+                  {/* Render historical indicator data */}
+                  {indicatorData.map((item, index) => {
+                    const isBullish = item.supertrend.direction === "up";
+                    const isBearish = item.supertrend.direction === "down";
+                    const priceGoingUp =
+                      index > 0 && item.close > indicatorData[index - 1].close;
+                    const priceGoingDown =
+                      index > 0 && item.close < indicatorData[index - 1].close;
+
+                    return (
+                      <TableRow key={item.timestamp}>
+                        <TableCell className="whitespace-nowrap font-medium">
+                          {formatTimestamp(item.timestamp)}
+                        </TableCell>
+                        <TableCell>{item.open.toFixed(2)}</TableCell>
+                        <TableCell>{item.high.toFixed(2)}</TableCell>
+                        <TableCell>{item.low.toFixed(2)}</TableCell>
+                        <TableCell
+                          className={
+                            priceGoingUp
+                              ? "text-green-600 dark:text-green-400"
+                              : priceGoingDown
+                              ? "text-red-600 dark:text-red-400"
+                              : ""
+                          }
+                        >
+                          {item.close.toFixed(2)}
+                        </TableCell>
+                        <TableCell>{item.ema9.toFixed(2)}</TableCell>
+                        <TableCell>{item.ema18.toFixed(2)}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={
+                                isBullish
+                                  ? "text-green-600 dark:text-green-400"
+                                  : "text-red-600 dark:text-red-400"
+                              }
+                            >
+                              {item.supertrend.value.toFixed(2)}
+                            </span>
+                            <Badge
+                              variant={isBullish ? "success" : "destructive"}
+                            >
+                              {isBullish ? "Bullish" : "Bearish"}
+                            </Badge>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {item.signal === "BUY" ? (
+                            <Badge
+                              variant="success"
+                              className={`flex items-center gap-1 ${
+                                item.isNewSignal ? "animate-pulse" : ""
+                              }`}
+                            >
+                              <ArrowUp className="h-3 w-3" />
+                              BUY
+                            </Badge>
+                          ) : item.signal === "SELL" ? (
+                            <Badge
+                              variant="destructive"
+                              className={`flex items-center gap-1 ${
+                                item.isNewSignal ? "animate-pulse" : ""
+                              }`}
+                            >
+                              <ArrowDown className="h-3 w-3" />
+                              SELL
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline">NEUTRAL</Badge>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </>
         )}
       </CardContent>
     </Card>

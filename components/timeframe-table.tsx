@@ -345,6 +345,7 @@ export default function TimeframeTable({
               break;
             case "change":
               const openA = parseFloat(rtDataA.dailyOHLC.open);
+
               const closeA =
                 rtDataA.lastPrice || parseFloat(rtDataA.dailyOHLC.close);
               const openB = parseFloat(rtDataB.dailyOHLC.open);

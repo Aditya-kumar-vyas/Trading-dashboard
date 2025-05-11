@@ -58,7 +58,7 @@ export const WOODIE_PIVOT_LEVELS = [
   { key: "s2", label: "S2", description: "Strong support level" },
 ];
 
-// Pivot Levels for DeMark Pivots
+// Pivot Levels for DeMark Pivotsp
 export const DEMARK_PIVOT_LEVELS = [
   { key: "r1", label: "R1", description: "Resistance level" },
   { key: "pivot", label: "PP (Pivot Point)", description: "Central pivot level" },
