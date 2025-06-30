@@ -1089,194 +1089,370 @@ export default function TechnicalIndicatorsTable({
   //   }
   // };
   // Enhanced update with real-time data function
+  // Enhanced update with real-time data function - FIXED VERSION
+  // Optimized real-time data update with automatic candle detection
   const updateWithRealTimeData = () => {
-    // Count function calls for debugging
     updateFunctionCallCountRef.current++;
 
-    // Log every 10 calls to verify function is being invoked
-    if (updateFunctionCallCountRef.current % 10 === 0) {
-      debugLog(
-        `updateWithRealTimeData called ${updateFunctionCallCountRef.current} times`
-      );
-    }
+    if (!isRealTimeMode) return;
 
-    // Direct DOM update for verifying updates (bypasses React rendering)
+    const rtData = marketData[instrument] || marketData[`NSE_INDEX|${instrument}`];
+    if (!rtData || !rtData.lastPrice) return;
+
+    // Update function call counter for debugging
     if (updateCounterRef.current) {
       updateCounterRef.current.textContent = `Function calls: ${updateFunctionCallCountRef.current}`;
     }
 
-    if (!isRealTimeMode) {
-      return;
+    // DEBUG: Log the entire market data structure
+    if (updateFunctionCallCountRef.current % 20 === 0) {
+      console.log("🔍 FULL MARKET DATA STRUCTURE:", JSON.stringify(rtData, null, 2));
     }
 
-    const rtData =
-      marketData[instrument] || marketData[`NSE_INDEX|${instrument}`];
-
-    if (!rtData || !rtData.lastPrice) {
-      debugLog("No real-time data available");
-      return;
+    // Extract OHLC candles from market feed - get from the correct location
+    let marketOHLCData = null;
+    
+    // Check if we have OHLC data in the expected structure
+    if (rtData.ohlc && Array.isArray(rtData.ohlc)) {
+      marketOHLCData = rtData.ohlc;
     }
-
-    // Get current price
-    const currentPrice = rtData.lastPrice;
-
-    // Check if price has actually changed since last update
-    const priceChanged = lastPriceRef.current !== currentPrice;
-
-    // Update last price reference regardless
-    lastPriceRef.current = currentPrice;
-
-    // Record last update time
-    lastDataUpdateTimeRef.current = Date.now();
-
-    const now = new Date();
-    const currentMinute = now.getMinutes();
-    const currentSecond = now.getSeconds();
-    const currentMilliseconds = now.getMilliseconds();
-
-    // Always increment update counter regardless of price change
-    priceUpdatesCountRef.current++;
-
-    // Always update debug status
-    updateDebugInfo(currentPrice, now);
-
-    // Check if we're at the exact minute transition (0 seconds, with small tolerance)
-    // Or if the minute has changed since our last check
-    const isExactMinuteTransition =
-      currentSecond === 0 && currentMilliseconds < 200;
-    const isMinuteChanged = lastProcessedMinuteRef.current !== currentMinute;
-
-    // Debug the transition detection
-    if (isExactMinuteTransition) {
-      debugLog(`Exact minute transition detected at: ${now.toISOString()}`);
-    }
-
-    // Minute change detection with special handling for exact transitions
-    if (isMinuteChanged) {
-      debugLog(
-        `Minute change detected: ${lastProcessedMinuteRef.current} → ${currentMinute} (seconds: ${currentSecond}, ms: ${currentMilliseconds})`
+    
+    if (marketOHLCData && marketOHLCData.length > 0) {
+      // DEBUG: Log available intervals
+      if (updateFunctionCallCountRef.current % 30 === 0) {
+        const intervals = marketOHLCData.map((candle: any) => candle.interval);
+        console.log("🕐 AVAILABLE INTERVALS:", intervals);
+      }
+      
+      // Find 1-minute candles (try different interval formats)
+      let minuteCandles = marketOHLCData.filter((candle: any) => 
+        candle.interval === "I1" || 
+        candle.interval === "1m" || 
+        candle.interval === "1minute" ||
+        candle.interval === "MINUTE"
       );
+      
+      if (minuteCandles.length > 0) {
+        // Get the latest minute candle
+        const latestCandle = minuteCandles.sort((a: any, b: any) => parseInt(b.ts) - parseInt(a.ts))[0];
+        
+        // Convert timestamp from milliseconds to Date
+        const candleStartTime = new Date(parseInt(latestCandle.ts));
+        
+        // Normalize to exact minute boundary
+        const candleMinute = new Date(candleStartTime);
+        candleMinute.setSeconds(0);
+        candleMinute.setMilliseconds(0);
 
-      // If we have a current candle, finalize it and add to history
-      if (currentCandleRef.current) {
-        debugLog("Finalizing current candle", currentCandleRef.current);
-
-        // Create a standard OHLC candle from the in-progress one
-        const finalizedCandle: OHLCData = {
-          timestamp: currentCandleRef.current.timestamp,
-          open: currentCandleRef.current.open,
-          high: currentCandleRef.current.high,
-          low: currentCandleRef.current.low,
-          close: currentCandleRef.current.close,
-        };
-
-        // Add the finalized candle to history and process
-        const updatedCandles = [
-          ...indicatorDataRef.current,
-          finalizedCandle,
-        ].slice(-MAX_CANDLES);
-        const processedData = processData(updatedCandles);
-
-        // Update state, refs, and persistence
-        setIndicatorData(processedData);
-        indicatorDataRef.current = processedData; // Update ref immediately
-        saveToLocalStorage(processedData);
-
-        // Update UI information
-        setLastUpdated(now.toLocaleTimeString());
-      }
-
-      // Create a new candle for the current minute with exact minute timestamp
-      // Ensure the timestamp is exactly at the start of the minute (xx:xx:00.000)
-      const exactMinuteTime = new Date(now);
-      exactMinuteTime.setSeconds(0);
-      exactMinuteTime.setMilliseconds(0);
-
-      currentCandleRef.current = {
-        timestamp: exactMinuteTime.toISOString(),
-        open: currentPrice,
-        high: currentPrice,
-        low: currentPrice,
-        close: currentPrice,
-        updates: 1,
-        lastUpdateTime: now.toISOString(),
-      };
-
-      // Reset update counter for the new minute
-      priceUpdatesCountRef.current = 1;
-
-      // Update the minute reference
-      lastProcessedMinuteRef.current = currentMinute;
-
-      debugLog(
-        "New candle created with exact minute timestamp",
-        currentCandleRef.current
-      );
-
-      // Force a render update
-      setForceRender((prev) => prev + 1);
-    }
-    // Same minute - update the current candle
-    else if (currentCandleRef.current) {
-      const candle = currentCandleRef.current;
-      let updated = false;
-
-      // Update high if price is higher
-      if (currentPrice > candle.high) {
-        candle.high = currentPrice;
-        updated = true;
-      }
-
-      // Update low if price is lower
-      if (currentPrice < candle.low) {
-        candle.low = currentPrice;
-        updated = true;
-      }
-
-      // Always update close with latest price
-      if (candle.close !== currentPrice) {
-        candle.close = currentPrice;
-        updated = true;
-      }
-
-      // Always update metadata
-      candle.updates = priceUpdatesCountRef.current;
-      candle.lastUpdateTime = now.toISOString();
-
-      if (updated) {
-        debugLog("Updated current candle", {
-          high: candle.high,
-          low: candle.low,
-          close: candle.close,
-          updates: candle.updates,
+        // Check if this is a new candle we haven't seen before
+        const existingCandles = indicatorDataRef.current;
+        const existingCandle = existingCandles.find((candle) => {
+          const existingTime = new Date(candle.timestamp);
+          existingTime.setSeconds(0);
+          existingTime.setMilliseconds(0);
+          return existingTime.getTime() === candleMinute.getTime();
         });
+
+        // NEW CANDLE DETECTION: If this candle doesn't exist, add it automatically
+        if (!existingCandle) {
+          console.log("🎯 NEW 1-MINUTE CANDLE DETECTED:", {
+            startTime: candleMinute.toISOString(),
+            ohlc: {
+              open: latestCandle.open,
+              high: latestCandle.high,
+              low: latestCandle.low,
+              close: latestCandle.close
+            }
+          });
+
+          // Calculate indicators for the new candle
+          const newCandleWithIndicators = calculateIncrementalIndicators(latestCandle, candleMinute);
+
+          if (newCandleWithIndicators) {
+            // Add to data array
+            const updatedData = [...existingCandles, newCandleWithIndicators].slice(-MAX_CANDLES);
+            
+            // Calculate buy/sell signals
+            const updatedDataWithSignals = updateSignalsForRecentCandles(updatedData);
+            
+            // Get the latest candle with signals
+            const latestCandleWithSignal = updatedDataWithSignals[updatedDataWithSignals.length - 1];
+            
+            console.log("📊 NEW CANDLE ADDED WITH SIGNALS:", {
+              timestamp: latestCandleWithSignal.timestamp,
+              ohlc: {
+                open: latestCandleWithSignal.open,
+                high: latestCandleWithSignal.high,
+                low: latestCandleWithSignal.low,
+                close: latestCandleWithSignal.close
+              },
+              indicators: {
+                ema9: latestCandleWithSignal.ema9.toFixed(2),
+                ema18: latestCandleWithSignal.ema18.toFixed(2),
+                supertrend: latestCandleWithSignal.supertrend.value.toFixed(2),
+                direction: latestCandleWithSignal.supertrend.direction
+              },
+              signal: latestCandleWithSignal.signal,
+              isNewSignal: latestCandleWithSignal.isNewSignal
+            });
+
+            // Update state and refs
+            setIndicatorData(updatedDataWithSignals);
+            indicatorDataRef.current = updatedDataWithSignals;
+            saveToLocalStorage(updatedDataWithSignals);
+            setLastUpdated(new Date().toLocaleTimeString());
+            
+            // Update processed minute reference
+            lastProcessedMinuteRef.current = candleMinute.getMinutes();
+            
+            // Force UI update
+            setForceRender((prev) => prev + 1);
+          }
+        }
+
+        // Always update current candle reference with latest data
+        currentCandleRef.current = {
+          timestamp: candleMinute.toISOString(),
+          open: latestCandle.open,
+          high: latestCandle.high,
+          low: latestCandle.low,
+          close: latestCandle.close,
+          updates: priceUpdatesCountRef.current,
+          lastUpdateTime: new Date().toISOString(),
+        };
+      } else {
+        // FALLBACK: No minute candles found, create/update manual candle from current price
+        const currentPrice = rtData.lastPrice;
+        const now = new Date();
+        const candleMinute = new Date(now);
+        candleMinute.setSeconds(0);
+        candleMinute.setMilliseconds(0);
+        
+        // Check if we need to create a new minute candle or update existing one
+        const currentMinute = now.getMinutes();
+        
+        if (lastProcessedMinuteRef.current !== currentMinute) {
+          // New minute - finalize previous candle and start new one
+          if (currentCandleRef.current) {
+            // Finalize previous candle
+            const finalizedCandle: OHLCData = {
+              timestamp: currentCandleRef.current.timestamp,
+              open: currentCandleRef.current.open,
+              high: currentCandleRef.current.high,
+              low: currentCandleRef.current.low,
+              close: currentCandleRef.current.close,
+            };
+
+            const updatedCandles = [...indicatorDataRef.current, finalizedCandle].slice(-MAX_CANDLES);
+            const processedData = processData(updatedCandles);
+            setIndicatorData(processedData);
+            indicatorDataRef.current = processedData;
+            saveToLocalStorage(processedData);
+            setLastUpdated(now.toLocaleTimeString());
+          }
+          
+          // Create new candle for current minute
+          currentCandleRef.current = {
+            timestamp: candleMinute.toISOString(),
+            open: currentPrice,
+            high: currentPrice,
+            low: currentPrice,
+            close: currentPrice,
+            updates: 1,
+            lastUpdateTime: now.toISOString(),
+          };
+          
+          lastProcessedMinuteRef.current = currentMinute;
+          
+          console.log("🔄 MANUAL CANDLE CREATED (no market data):", {
+            minute: currentMinute,
+            price: currentPrice,
+            timestamp: candleMinute.toISOString()
+          });
+        } else {
+          // Same minute - update existing candle
+          if (currentCandleRef.current) {
+            const candle = currentCandleRef.current;
+            if (currentPrice > candle.high) candle.high = currentPrice;
+            if (currentPrice < candle.low) candle.low = currentPrice;
+            candle.close = currentPrice;
+            candle.updates = priceUpdatesCountRef.current;
+            candle.lastUpdateTime = now.toISOString();
+          }
+        }
       }
+    } else {
+      // NO OHLC DATA: Create manual candle from current price updates
+      const currentPrice = rtData.lastPrice;
+      const now = new Date();
+      const candleMinute = new Date(now);
+      candleMinute.setSeconds(0);
+      candleMinute.setMilliseconds(0);
+      const currentMinute = now.getMinutes();
+      
+      if (lastProcessedMinuteRef.current !== currentMinute) {
+        // New minute
+        if (currentCandleRef.current) {
+          const finalizedCandle: OHLCData = {
+            timestamp: currentCandleRef.current.timestamp,
+            open: currentCandleRef.current.open,
+            high: currentCandleRef.current.high,
+            low: currentCandleRef.current.low,
+            close: currentCandleRef.current.close,
+          };
 
-      // Update debug status with new candle data even if not updated
-      // This ensures the UI reflects the current state
-      setDebugStatus((prev) => ({
-        ...prev,
-        currentCandle: { ...candle },
-        updatesThisMinute: priceUpdatesCountRef.current,
-      }));
-
-      // Force a subtle UI update to ensure the component re-renders
-      // even if React doesn't detect state changes
-      setForceRender((prev) => prev + 1);
+          const updatedCandles = [...indicatorDataRef.current, finalizedCandle].slice(-MAX_CANDLES);
+          const processedData = processData(updatedCandles);
+          setIndicatorData(processedData);
+          indicatorDataRef.current = processedData;
+          saveToLocalStorage(processedData);
+          setLastUpdated(now.toLocaleTimeString());
+        }
+        
+        currentCandleRef.current = {
+          timestamp: candleMinute.toISOString(),
+          open: currentPrice,
+          high: currentPrice,
+          low: currentPrice,
+          close: currentPrice,
+          updates: 1,
+          lastUpdateTime: now.toISOString(),
+        };
+        
+        lastProcessedMinuteRef.current = currentMinute;
+        console.log("🆕 NEW MANUAL CANDLE (fallback mode):", currentPrice);
+      } else {
+        // Update existing candle
+        if (currentCandleRef.current) {
+          const candle = currentCandleRef.current;
+          if (currentPrice > candle.high) candle.high = currentPrice;
+          if (currentPrice < candle.low) candle.low = currentPrice;
+          candle.close = currentPrice;
+          candle.updates = priceUpdatesCountRef.current;
+          candle.lastUpdateTime = now.toISOString();
+        }
+      }
     }
-    // No current candle but we should have one - initialize
-    else {
-      debugLog("No current candle found, initializing one");
 
-      // Create a candle at the exact beginning of the current minute
-      const exactMinuteTime = new Date(now);
-      exactMinuteTime.setSeconds(0);
-      exactMinuteTime.setMilliseconds(0);
-
-      initializeCurrentCandle(exactMinuteTime, currentPrice);
-      priceUpdatesCountRef.current = 1;
-    }
+    // Update debug info
+    const currentPrice = rtData.lastPrice;
+    lastPriceRef.current = currentPrice;
+    lastDataUpdateTimeRef.current = Date.now();
+    priceUpdatesCountRef.current++;
+    updateDebugInfo(currentPrice, new Date());
   };
+
+  // Calculate incremental EMA for a single new candle
+  const calculateIncrementalEMA = (
+    newCandle: OHLCData,
+    existingData: IndicatorData[],
+    period: number
+  ): number => {
+    if (existingData.length === 0) return newCandle.close;
+    
+    const k = 2 / (period + 1);
+    const prevEMA = existingData[existingData.length - 1];
+    const previousEmaValue = period === 9 ? prevEMA.ema9 : prevEMA.ema18;
+    
+    return (newCandle.close - previousEmaValue) * k + previousEmaValue;
+  };
+
+  // Calculate incremental Supertrend for a single new candle
+  const calculateIncrementalSupertrend = (
+    newCandle: OHLCData,
+    existingData: IndicatorData[]
+  ): { value: number; direction: "up" | "down" } => {
+    if (existingData.length < SUPERTREND_PERIOD) {
+      return { value: 0, direction: "up" };
+    }
+
+    // Get last few candles for ATR calculation
+    const lastCandles = existingData.slice(-SUPERTREND_PERIOD).map(d => ({
+      timestamp: d.timestamp,
+      open: d.open,
+      high: d.high,
+      low: d.low,
+      close: d.close,
+    }));
+    lastCandles.push(newCandle);
+
+    // Calculate ATR for the new candle
+    const atr = calculateATR(lastCandles, SUPERTREND_PERIOD);
+    const currentATR = atr[atr.length - 1];
+
+    const hl2 = (newCandle.high + newCandle.low) / 2;
+    let upperBand = hl2 + SUPERTREND_MULTIPLIER * currentATR;
+    let lowerBand = hl2 - SUPERTREND_MULTIPLIER * currentATR;
+
+    // Get previous supertrend values
+    const prevSupertrend = existingData[existingData.length - 1].supertrend;
+
+    // Adjust bands based on previous values
+    if (prevSupertrend.direction === "down") {
+      upperBand = Math.min(upperBand, prevSupertrend.value);
+    }
+    if (prevSupertrend.direction === "up") {
+      lowerBand = Math.max(lowerBand, prevSupertrend.value);
+    }
+
+    // Determine current trend direction
+    let direction: "up" | "down";
+    let supertrendValue: number;
+
+    if (prevSupertrend.direction === "down" && newCandle.close > upperBand) {
+      direction = "up";
+      supertrendValue = lowerBand;
+    } else if (prevSupertrend.direction === "up" && newCandle.close < lowerBand) {
+      direction = "down";
+      supertrendValue = upperBand;
+    } else {
+      direction = prevSupertrend.direction;
+      supertrendValue = direction === "up" ? lowerBand : upperBand;
+    }
+
+    return { value: supertrendValue, direction };
+  };
+
+  // Calculate indicators for a new candle incrementally
+  const calculateIncrementalIndicators = (
+    marketCandle: any,
+    candleTime: Date
+  ): IndicatorData | null => {
+    const existingData = indicatorDataRef.current;
+    
+    const newCandle: OHLCData = {
+      timestamp: candleTime.toISOString(),
+      open: marketCandle.open,
+      high: marketCandle.high,
+      low: marketCandle.low,
+      close: marketCandle.close,
+    };
+
+    const ema9 = calculateIncrementalEMA(newCandle, existingData, 9);
+    const ema18 = calculateIncrementalEMA(newCandle, existingData, 18);
+    const supertrend = calculateIncrementalSupertrend(newCandle, existingData);
+
+    return {
+      ...newCandle,
+      ema9,
+      ema18,
+      supertrend,
+    };
+  };
+
+  // Update signals for the last few candles when a new one is added
+  const updateSignalsForRecentCandles = (data: IndicatorData[]): IndicatorData[] => {
+    if (data.length < 3) return data;
+    
+    // Only recalculate signals for the last 3 candles to ensure accuracy
+    const stableData = data.slice(0, -3);
+    const recentData = data.slice(-3);
+    
+    const updatedRecentData = calculateSignals(recentData);
+    
+    return [...stableData, ...updatedRecentData];
+  };
+
   // Update debug information
   const updateDebugInfo = (currentPrice: number, now: Date) => {
     const timeSinceLastUpdate =
@@ -1612,7 +1788,6 @@ export default function TechnicalIndicatorsTable({
     const {
       connectionState,
       lastPrice,
-      lastUpdateTime,
       updatesThisMinute,
       currentCandle,
       message,
@@ -1875,7 +2050,6 @@ export default function TechnicalIndicatorsTable({
                   {/* Render historical indicator data */}
                   {indicatorData.map((item, index) => {
                     const isBullish = item.supertrend.direction === "up";
-                    const isBearish = item.supertrend.direction === "down";
                     const priceGoingUp =
                       index > 0 && item.close > indicatorData[index - 1].close;
                     const priceGoingDown =
